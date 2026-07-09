@@ -1,0 +1,167 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "gh-token-broker",
+    "description": "Authenticates GitHub Actions OIDC callers, evaluates CEL policy, and mints least-privilege GitHub App installation tokens.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "/" }
+  ],
+  "security": [
+    { "oidcBearer": [] }
+  ],
+  "paths": {
+    "/actions/workflow-dispatch": {
+      "post": {
+        "summary": "Dispatch a workflow",
+        "description": "Mints a token scoped to `actions: write` on the target repository and dispatches the workflow server-side. The token never leaves the server.",
+        "operationId": "workflowDispatch",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/DispatchRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow dispatched",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DispatchResponse" }
+              }
+            }
+          },
+          "400": { "description": "Malformed request, missing fields, or a disallowed field present", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "401": { "description": "Missing or invalid bearer token", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "403": { "description": "No policy rule matched, or the matched grant does not cover the required permission", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "502": { "description": "Upstream GitHub API error", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
+    "/token": {
+      "post": {
+        "summary": "Issue a scoped token",
+        "description": "Returns a scoped GitHub App installation token to the caller. Only registered when `tokenIssuance.enabled` is true.",
+        "operationId": "issueToken",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/TokenRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token issued",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/TokenResponse" }
+              }
+            }
+          },
+          "400": { "description": "Malformed request, empty repositories/permissions, or repositories span multiple owners", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "401": { "description": "Missing or invalid bearer token", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "403": { "description": "No policy rule matched, or narrowing produced an empty scope", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "502": { "description": "Upstream GitHub API error", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "summary": "Liveness check",
+        "operationId": "healthz",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Service is up",
+            "content": { "text/plain": { "schema": { "type": "string", "example": "ok" } } }
+          }
+        }
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "summary": "This OpenAPI document",
+        "operationId": "openapiSpec",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "The OpenAPI document",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "oidcBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "GitHub Actions OIDC token (`id-token: write` in the calling workflow)."
+      }
+    },
+    "schemas": {
+      "DispatchRequest": {
+        "type": "object",
+        "required": ["owner", "repo", "ref", "workflow"],
+        "properties": {
+          "owner": { "type": "string" },
+          "repo": { "type": "string" },
+          "ref": { "type": "string" },
+          "workflow": { "type": "string" },
+          "inputs": { "type": "object", "additionalProperties": true }
+        },
+        "additionalProperties": false
+      },
+      "DispatchResponse": {
+        "type": "object",
+        "properties": {
+          "status": { "type": "string", "example": "dispatched" },
+          "repository": { "type": "string", "example": "acme/app" },
+          "workflow": { "type": "string" },
+          "ref": { "type": "string" },
+          "permissions": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          }
+        }
+      },
+      "TokenRequest": {
+        "type": "object",
+        "required": ["repositories", "permissions"],
+        "properties": {
+          "repositories": {
+            "type": "array",
+            "items": { "type": "string" },
+            "example": ["acme/app"]
+          },
+          "permissions": {
+            "type": "object",
+            "additionalProperties": { "type": "string", "enum": ["read", "write", "admin"] },
+            "example": { "contents": "read" }
+          }
+        }
+      },
+      "TokenResponse": {
+        "type": "object",
+        "properties": {
+          "token": { "type": "string" },
+          "expires_at": { "type": "string", "format": "date-time" },
+          "permissions": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "repositories": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

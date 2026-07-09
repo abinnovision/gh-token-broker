@@ -1,0 +1,60 @@
+version: 2
+
+project_name: gh-token-broker
+
+builds:
+  - id: gh-token-broker
+    main: ./cmd/gh-token-broker
+    binary: gh-token-broker
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64
+
+dockers_v2:
+  - id: gh-token-broker
+    dockerfile: Dockerfile
+    ids:
+      - gh-token-broker
+    images:
+      - ghcr.io/abinnovision/gh-token-broker
+    tags:
+      - "{{ .Version }}"
+      - latest
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.source: https://github.com/abinnovision/gh-token-broker
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+
+archives:
+  - formats: [tar.gz]
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^feat'
+      order: 0
+    - title: Fixes
+      regexp: '^fix'
+      order: 1
+    - title: Other
+      order: 999

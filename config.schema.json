@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/abinnovision/gh-token-broker/config.schema.json",
+  "title": "gh-token-broker configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["oidc", "githubApp"],
+  "properties": {
+    "server": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "bind": { "type": "string", "default": ":8080" }
+      }
+    },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["audience"],
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "default": "https://token.actions.githubusercontent.com"
+        },
+        "audience": {
+          "type": "string",
+          "minLength": 1,
+          "description": "REQUIRED proxy-specific OIDC audience; tokens whose aud does not match exactly are rejected"
+        },
+        "clockSkewSeconds": { "type": "integer", "minimum": 0, "default": 60 }
+      }
+    },
+    "githubApp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["appId"],
+      "properties": {
+        "appId": { "type": "integer", "minimum": 1 },
+        "privateKeyPath": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to the App private key PEM file. Never put raw key material in this YAML."
+        },
+        "privateKeyEnv": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Name of an environment variable holding the App private key PEM."
+        }
+      }
+    },
+    "tokenIssuance": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean", "default": false }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "costLimit": { "type": "integer", "minimum": 1, "default": 10000 },
+        "maxRepositories": { "type": "integer", "minimum": 1, "default": 256 },
+        "rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/rule" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "permissions": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": { "enum": ["read", "write", "admin"] }
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "repositories": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "permissions": { "$ref": "#/$defs/permissions" }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "when", "grant"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "when": {
+          "type": "string",
+          "minLength": 1,
+          "description": "CEL expression evaluating to bool; the only CEL-evaluated part of a rule"
+        },
+        "grant": { "$ref": "#/$defs/grant" },
+        "onError": { "enum": ["skip", "reject"] }
+      }
+    }
+  }
+}

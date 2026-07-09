@@ -1,0 +1,11 @@
+# gh-token-broker handles credentials, so it enables a stricter set than the
+# reference project. gosec is included because this service mints and handles
+# GitHub tokens.
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - gosec

@@ -1,0 +1,57 @@
+# gh-token-broker example configuration.
+#
+# Policy is CEL-only: every rule is a CEL `when` condition plus a static,
+# operator-authored `grant`. Rules are evaluated in order, first-match-wins;
+# if none match, the request is denied (deny-by-default).
+
+server:
+  bind: ":8080"
+
+oidc:
+  # GitHub Actions OIDC issuer (pinned). Override only for GHES.
+  issuer: "https://token.actions.githubusercontent.com"
+  # REQUIRED: a proxy-specific audience. GitHub's default audience is claimable
+  # by any workflow in the org, so this MUST be a value you set explicitly on
+  # the caller side (id-token: request with `aud: <this value>`).
+  audience: "gh-token-broker"
+  clockSkewSeconds: 60
+
+githubApp:
+  appId: 123456
+  # Reference the private key by file path OR by env var name — never paste raw
+  # PEM into this file. Set exactly one of the two.
+  privateKeyPath: "/etc/gh-token-broker/app.pem"
+  # privateKeyEnv: "GITHUB_APP_PRIVATE_KEY"
+
+# Raw scoped-token export. When false, the /token route is not registered at
+# all (see README).
+tokenIssuance:
+  enabled: false
+
+policy:
+  # CEL runtime cost limit per evaluation (defense against pathological rules).
+  costLimit: 10000
+  # Cap on a caller-supplied request.repositories list before it is bound as a
+  # CEL variable. Oversized requests are rejected, never truncated.
+  maxRepositories: 256
+  rules:
+    # ANCHORED matching only: use == or `in [...]` against id-anchored caller
+    # claims. Never use substring/prefix matching (no such helpers are exposed).
+    - name: acme-ci-can-dispatch
+      when: 'caller.repository_owner == "acme" && caller.repository == "acme/app"'
+      grant:
+        repositories: ["acme/app"]
+        permissions:
+          actions: write
+          contents: read
+      onError: reject # fail closed on eval error (default)
+
+    # grant.repositories is optional. Omitting it means "when" is trusted to
+    # have already fully validated the requested/dispatched target — useful
+    # for a pattern instead of enumerating every matching repo, e.g. granting
+    # each caller access to its own "-gitops" sibling repo:
+    - name: gitops-sibling
+      when: 'request.repositories.all(r, r == caller.repository + "-gitops")'
+      grant:
+        permissions:
+          contents: read
