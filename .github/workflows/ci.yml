@@ -1,17 +1,38 @@
-name: release
+name: ci
 
 on:
   push:
     branches:
       - main
+  pull_request:
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test -race ./...
+
   release:
+    # Tag + release only after the full test matrix is green, and only on
+    # pushes to main (never on pull requests).
+    needs: [test]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
     steps:
       - uses: actions/checkout@v7
         with:
