@@ -1,0 +1,64 @@
+name: release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # svu and the GoReleaser changelog need full history + tags
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Compute next version
+        id: svu
+        env:
+          GOTOOLCHAIN: auto # setup-go@v6 defaults to 'local'; svu may need a newer toolchain than go.mod
+        run: |
+          go install github.com/caarlos0/svu/v3@latest
+          current="$(svu current 2>/dev/null || echo v0.0.0)"
+          next="$(svu next)"
+          echo "current=${current} next=${next}"
+          echo "next=${next}" >> "$GITHUB_OUTPUT"
+          if [ "${next}" = "${current}" ]; then
+            echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create tag
+        if: steps.svu.outputs.release == 'true'
+        env:
+          NEXT: ${{ steps.svu.outputs.next }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "$NEXT" -m "$NEXT"
+          git push origin "refs/tags/$NEXT"
+      # QEMU is not strictly required for a COPY-only Dockerfile, but is
+      # harmless belt-and-suspenders for future RUN steps.
+      - uses: docker/setup-qemu-action@v4
+        if: steps.svu.outputs.release == 'true'
+      - uses: docker/setup-buildx-action@v4
+        if: steps.svu.outputs.release == 'true'
+      - uses: docker/login-action@v4
+        if: steps.svu.outputs.release == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: goreleaser/goreleaser-action@v7
+        if: steps.svu.outputs.release == 'true'
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
