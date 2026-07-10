@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -20,6 +21,8 @@ import (
 	"github.com/abinnovision/gh-token-broker/internal/policy"
 	"github.com/abinnovision/gh-token-broker/internal/server"
 )
+
+const testIssuer = "https://issuer.example.com"
 
 type fakeAuth struct {
 	id  *auth.Identity
@@ -89,7 +92,7 @@ func newHarness(t *testing.T, policies []config.Policy, tokenEnabled bool) harne
 	var buf bytes.Buffer
 	auditLog := audit.New(slog.New(slog.NewJSONHandler(&buf, nil)))
 	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter, dispatcher,
-		auditLog, slog.New(slog.DiscardHandler), tokenEnabled)
+		auditLog, slog.New(slog.DiscardHandler), tokenEnabled, testIssuer)
 	return harness{server: srv, minter: minter, dispatcher: dispatcher, audit: &buf}
 }
 
@@ -99,6 +102,39 @@ func do(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	req.Header.Set("Authorization", "Bearer testtoken")
 	h.ServeHTTP(rec, req)
 	return rec
+}
+
+// baseTokenForm returns a valid RFC 8693 token-exchange request form for
+// "acme/app" with scope "contents:read"; tests mutate/override as needed.
+func baseTokenForm() url.Values {
+	return url.Values{
+		"grant_type":         {"urn:ietf:params:oauth:grant-type:token-exchange"},
+		"subject_token":      {"testtoken"},
+		"subject_token_type": {"urn:ietf:params:oauth:token-type:id_token"},
+		"resource":           {"acme/app"},
+		"scope":              {"contents:read"},
+	}
+}
+
+func doToken(h http.Handler, form url.Values) *httptest.ResponseRecorder {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+func oauthError(t *testing.T, rec *httptest.ResponseRecorder) string {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("response is not JSON: %v (body=%s)", err, rec.Body.String())
+	}
+	code, _ := out["error"].(string)
+	if code == "" {
+		t.Fatalf("response has no error field: %s", rec.Body.String())
+	}
+	return code
 }
 
 func allowTokenPolicy() config.Policy {
@@ -148,8 +184,7 @@ func TestOpenAPISpecServed(t *testing.T) {
 
 func TestTokenRouteAbsentWhenDisabled(t *testing.T) {
 	h := newHarness(t, []config.Policy{allowTokenPolicy()}, false)
-	rec := do(h.server.Handler(), http.MethodPost, "/token",
-		`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`)
+	rec := doToken(h.server.Handler(), baseTokenForm())
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("token route must be absent (404) when disabled, got %d", rec.Code)
 	}
@@ -158,9 +193,342 @@ func TestTokenRouteAbsentWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestMetadataRouteAbsentWhenDisabled(t *testing.T) {
+	h := newHarness(t, nil, false)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	h.server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("metadata route must be absent (404) when disabled, got %d", rec.Code)
+	}
+}
+
+func TestMetadataRouteWhenEnabled(t *testing.T) {
+	h := newHarness(t, nil, true)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
+	h.server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["issuer"] != testIssuer {
+		t.Errorf("issuer = %v, want %s", out["issuer"], testIssuer)
+	}
+	if out["token_endpoint"] != testIssuer+"/token" {
+		t.Errorf("token_endpoint = %v, want %s/token", out["token_endpoint"], testIssuer)
+	}
+	grants, _ := out["grant_types_supported"].([]any)
+	if len(grants) != 1 || grants[0] != "urn:ietf:params:oauth:grant-type:token-exchange" {
+		t.Errorf("grant_types_supported = %v", out["grant_types_supported"])
+	}
+}
+
 func TestTokenIssuedWhenEnabled(t *testing.T) {
 	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
-	rec := do(h.server.Handler(), http.MethodPost, "/token",
+	rec := doToken(h.server.Handler(), baseTokenForm())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !h.minter.called {
+		t.Fatal("minter should have been called")
+	}
+	if got := h.minter.gotRepos; len(got) != 1 || got[0] != "acme/app" {
+		t.Fatalf("mint repositories = %v, want [acme/app]", got)
+	}
+	if got := h.minter.gotPerms; len(got) != 1 || got["contents"] != "read" {
+		t.Fatalf("mint permissions = %v, want contents:read", got)
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out["access_token"] != "ghs_test" {
+		t.Fatalf("access_token missing in response: %v", out)
+	}
+	if out["issued_token_type"] != "urn:ietf:params:oauth:token-type:access_token" {
+		t.Errorf("issued_token_type = %v", out["issued_token_type"])
+	}
+	if out["token_type"] != "bearer" {
+		t.Errorf("token_type = %v, want bearer", out["token_type"])
+	}
+	if _, ok := out["expires_in"]; !ok {
+		t.Errorf("expires_in missing: %v", out)
+	}
+	// Granted permissions (contents:read) equal requested scope, so scope
+	// should be omitted from the response.
+	if _, ok := out["scope"]; ok {
+		t.Errorf("scope should be omitted when granted == requested, got %v", out["scope"])
+	}
+}
+
+func TestTokenConditionAuthorizesDynamicRepositories(t *testing.T) {
+	policy := config.Policy{
+		Name:      "gitops-suffix",
+		Condition: `request.repositories.all(r, r == caller.repository + "-gitops")`,
+		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
+	}
+	h := newHarness(t, []config.Policy{policy}, true)
+	form := baseTokenForm()
+	form.Set("resource", "acme/app-gitops")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := h.minter.gotRepos; len(got) != 1 || got[0] != "acme/app-gitops" {
+		t.Fatalf("gotRepos = %v, want [acme/app-gitops]", got)
+	}
+}
+
+func TestTokenConditionRejectsUnauthorizedRepositories(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form.Set("resource", "acme/other")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if code := oauthError(t, rec); code != "invalid_grant" {
+		t.Errorf("error = %s, want invalid_grant", code)
+	}
+	if h.minter.called {
+		t.Fatal("minter must not be called for a repository the condition rejects")
+	}
+}
+
+func TestTokenIssuanceRejectsUnknownRequestedPermission(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form.Set("scope", "not_a_permission:read")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_scope" {
+		t.Errorf("error = %s, want invalid_scope", code)
+	}
+	if h.minter.called {
+		t.Fatal("minter must not be called for an unknown requested permission")
+	}
+}
+
+func TestTokenDenyPathNoGitHubCallAndAudited(t *testing.T) {
+	// This policy requires owner "other"; the acme caller does not match.
+	policy := config.Policy{
+		Name: "only-other", Condition: `caller.repository_owner == "other"`,
+		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
+	}
+	h := newHarness(t, []config.Policy{policy}, true)
+	rec := doToken(h.server.Handler(), baseTokenForm())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_grant" {
+		t.Errorf("error = %s, want invalid_grant", code)
+	}
+	if h.minter.called {
+		t.Fatal("no GitHub call on deny")
+	}
+	assertAuditDecision(t, h.audit, "deny", "token")
+}
+
+func TestTokenAuditRecordsSkippedPolicies(t *testing.T) {
+	broken := config.Policy{
+		Name: "broken-at-runtime", Condition: "1 / 0 == 0",
+		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
+	}
+	h := newHarness(t, []config.Policy{broken, allowTokenPolicy()}, true)
+	rec := doToken(h.server.Handler(), baseTokenForm())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	assertAuditPolicyFields(t, h.audit, []string{"allow-acme-token"}, []string{"broken-at-runtime"})
+}
+
+func TestTokenExchangeRejectsWrongContentType(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"grant_type":"x"}`))
+	req.Header.Set("Content-Type", "application/json")
+	h.server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_request" {
+		t.Errorf("error = %s, want invalid_request", code)
+	}
+}
+
+func TestTokenExchangeMissingGrantType(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form.Del("grant_type")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_request" {
+		t.Errorf("error = %s, want invalid_request", code)
+	}
+}
+
+func TestTokenExchangeRejectsUnsupportedGrantType(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form.Set("grant_type", "client_credentials")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "unsupported_grant_type" {
+		t.Errorf("error = %s, want unsupported_grant_type", code)
+	}
+	if h.minter.called {
+		t.Fatal("minter must not be called")
+	}
+}
+
+func TestTokenExchangeRejectsActorToken(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form.Set("actor_token", "something")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_request" {
+		t.Errorf("error = %s, want invalid_request", code)
+	}
+}
+
+func TestTokenExchangeRejectsMissingSubjectToken(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form.Del("subject_token")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_request" {
+		t.Errorf("error = %s, want invalid_request", code)
+	}
+}
+
+func TestTokenExchangeRejectsWrongSubjectTokenType(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_request" {
+		t.Errorf("error = %s, want invalid_request", code)
+	}
+}
+
+func TestTokenExchangeRejectsUnsupportedRequestedTokenType(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form.Set("requested_token_type", "urn:ietf:params:oauth:token-type:jwt")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_request" {
+		t.Errorf("error = %s, want invalid_request", code)
+	}
+}
+
+func TestTokenExchangeSubjectTokenVerificationFailureIsInvalidGrant(t *testing.T) {
+	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256, Policies: []config.Policy{allowTokenPolicy()}}}
+	engine, err := policy.New(cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("policy.New: %v", err)
+	}
+	minter := &fakeMinter{}
+	dispatcher := &fakeDispatcher{}
+	auditLog := audit.New(slog.New(slog.DiscardHandler))
+	srv := server.New(fakeAuth{err: context.DeadlineExceeded}, engine, minter, dispatcher,
+		auditLog, slog.New(slog.DiscardHandler), true, testIssuer)
+
+	rec := doToken(srv.Handler(), baseTokenForm())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_grant" {
+		t.Errorf("error = %s, want invalid_grant", code)
+	}
+	if minter.called {
+		t.Fatal("minter must not be called when subject_token verification fails")
+	}
+}
+
+func TestTokenExchangeRejectsMultiOwnerResource(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form["resource"] = []string{"acme/app", "other/app"}
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_target" {
+		t.Errorf("error = %s, want invalid_target", code)
+	}
+}
+
+func TestTokenExchangeRejectsMismatchedAudience(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	form := baseTokenForm()
+	form.Set("audience", "other")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_target" {
+		t.Errorf("error = %s, want invalid_target", code)
+	}
+}
+
+func TestTokenExchangeEmptyScopeMintErrorIsInvalidGrant(t *testing.T) {
+	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256, Policies: []config.Policy{allowTokenPolicy()}}}
+	engine, err := policy.New(cfg, slog.New(slog.DiscardHandler))
+	if err != nil {
+		t.Fatalf("policy.New: %v", err)
+	}
+	minter := &fakeMinter{err: githubapp.ErrEmptyScope}
+	dispatcher := &fakeDispatcher{}
+	auditLog := audit.New(slog.New(slog.DiscardHandler))
+	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter, dispatcher,
+		auditLog, slog.New(slog.DiscardHandler), true, testIssuer)
+
+	rec := doToken(srv.Handler(), baseTokenForm())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_grant" {
+		t.Errorf("error = %s, want invalid_grant", code)
+	}
+}
+
+func TestActionsExchangeRouteAbsentWhenDisabled(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, false)
+	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
+		`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("actions/exchange route must be absent (404) when disabled, got %d", rec.Code)
+	}
+	if h.minter.called {
+		t.Fatal("minter must not be called")
+	}
+}
+
+func TestActionsExchangeIssuedWhenEnabled(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -181,16 +549,19 @@ func TestTokenIssuedWhenEnabled(t *testing.T) {
 	if out["token"] != "ghs_test" {
 		t.Fatalf("token missing in response: %v", out)
 	}
+	if _, ok := out["expires_at"]; !ok {
+		t.Errorf("expires_at missing: %v", out)
+	}
 }
 
-func TestTokenConditionAuthorizesDynamicRepositories(t *testing.T) {
+func TestActionsExchangeConditionAuthorizesDynamicRepositories(t *testing.T) {
 	policy := config.Policy{
 		Name:      "gitops-suffix",
 		Condition: `request.repositories.all(r, r == caller.repository + "-gitops")`,
 		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
 	h := newHarness(t, []config.Policy{policy}, true)
-	rec := do(h.server.Handler(), http.MethodPost, "/token",
+	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/app-gitops"],"permissions":{"contents":"read"}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -200,9 +571,9 @@ func TestTokenConditionAuthorizesDynamicRepositories(t *testing.T) {
 	}
 }
 
-func TestTokenConditionRejectsUnauthorizedRepositories(t *testing.T) {
+func TestActionsExchangeConditionRejectsUnauthorizedRepositories(t *testing.T) {
 	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
-	rec := do(h.server.Handler(), http.MethodPost, "/token",
+	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/other"],"permissions":{"contents":"read"}}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -212,9 +583,9 @@ func TestTokenConditionRejectsUnauthorizedRepositories(t *testing.T) {
 	}
 }
 
-func TestTokenIssuanceRejectsUnknownRequestedPermission(t *testing.T) {
+func TestActionsExchangeRejectsUnknownRequestedPermission(t *testing.T) {
 	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
-	rec := do(h.server.Handler(), http.MethodPost, "/token",
+	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/app"],"permissions":{"not_a_permission":"read"}}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
@@ -224,14 +595,14 @@ func TestTokenIssuanceRejectsUnknownRequestedPermission(t *testing.T) {
 	}
 }
 
-func TestTokenDenyPathNoGitHubCallAndAudited(t *testing.T) {
+func TestActionsExchangeDenyPathNoGitHubCallAndAudited(t *testing.T) {
 	// This policy requires owner "other"; the acme caller does not match.
 	policy := config.Policy{
 		Name: "only-other", Condition: `caller.repository_owner == "other"`,
 		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
 	h := newHarness(t, []config.Policy{policy}, true)
-	rec := do(h.server.Handler(), http.MethodPost, "/token",
+	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
@@ -239,21 +610,19 @@ func TestTokenDenyPathNoGitHubCallAndAudited(t *testing.T) {
 	if h.minter.called {
 		t.Fatal("no GitHub call on deny")
 	}
-	assertAuditDecision(t, h.audit, "deny", "token")
+	assertAuditDecision(t, h.audit, "deny", "actions-exchange")
 }
 
-func TestTokenAuditRecordsSkippedPolicies(t *testing.T) {
-	broken := config.Policy{
-		Name: "broken-at-runtime", Condition: "1 / 0 == 0",
-		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
+func TestActionsExchangeMissingBearerIs401(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/actions/exchange",
+		strings.NewReader(`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`))
+	// No Authorization header.
+	h.server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", rec.Code)
 	}
-	h := newHarness(t, []config.Policy{broken, allowTokenPolicy()}, true)
-	rec := do(h.server.Handler(), http.MethodPost, "/token",
-		`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	assertAuditPolicyFields(t, h.audit, []string{"allow-acme-token"}, []string{"broken-at-runtime"})
 }
 
 func TestWorkflowDispatchHappyPath(t *testing.T) {

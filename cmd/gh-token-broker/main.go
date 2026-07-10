@@ -70,7 +70,7 @@ func run(logger *slog.Logger, configPath string) error {
 
 	auditLog := audit.New(logger)
 	srv := server.New(authn, engine, ghClient, actions.GitHubDispatcher{},
-		auditLog, logger, cfg.TokenIssuance.Enabled)
+		auditLog, logger, cfg.TokenIssuance.Enabled, cfg.TokenIssuance.Issuer)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Bind,

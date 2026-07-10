@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -42,10 +43,16 @@ type GitHubAppConfig struct {
 	PrivateKeyEnv  string `yaml:"privateKeyEnv"`
 }
 
-// TokenIssuanceConfig gates the token-issuance endpoint. When Enabled is
-// false, /token is not registered on the mux at all (not merely 403).
+// TokenIssuanceConfig gates the RFC 8693 token-exchange endpoint. When
+// Enabled is false, /token and /.well-known/oauth-authorization-server are
+// not registered on the mux at all (not merely 403).
 type TokenIssuanceConfig struct {
 	Enabled bool `yaml:"enabled"`
+	// Issuer is the broker's own OAuth issuer identifier — a stable, absolute
+	// HTTPS URL (e.g. "https://gh-token-broker.example.com") used verbatim as
+	// the "issuer" value in RFC 8414 metadata and as the base for
+	// token_endpoint. Required when Enabled is true.
+	Issuer string `yaml:"issuer"`
 }
 
 type PolicyConfig struct {
@@ -158,6 +165,15 @@ func validate(cfg *Config) error {
 	}
 	if cfg.GitHubApp.PrivateKeyPath != "" && cfg.GitHubApp.PrivateKeyEnv != "" {
 		return fmt.Errorf("githubApp: set only one of privateKeyPath or privateKeyEnv")
+	}
+	if cfg.TokenIssuance.Enabled {
+		if cfg.TokenIssuance.Issuer == "" {
+			return fmt.Errorf("tokenIssuance.issuer is required when tokenIssuance.enabled is true")
+		}
+		u, err := url.Parse(cfg.TokenIssuance.Issuer)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("tokenIssuance.issuer must be an absolute https:// URL")
+		}
 	}
 
 	seen := map[string]bool{}
