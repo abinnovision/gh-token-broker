@@ -118,7 +118,11 @@ jobs:
 
 ### Request a scoped token
 
-`POST /token` must be enabled with `tokenIssuance.enabled: true`.
+`POST /token` must be enabled with `tokenIssuance.enabled: true`. It's an RFC
+8693 OAuth 2.0 Token Exchange endpoint, so the easiest way to call it from a
+workflow is [`oidc-token-cli`](https://github.com/abinnovision/oidc-token-cli),
+which fetches the GitHub Actions OIDC token and performs the exchange in one
+step. Install it with `brew install abinnovision/tap/oidc-token`.
 
 ```yaml
 jobs:
@@ -128,12 +132,19 @@ jobs:
       id-token: write
     steps:
       - run: |
-          ID_TOKEN_RESPONSE=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=gh-token-broker")
-          ID_TOKEN=$(echo "$ID_TOKEN_RESPONSE" | jq -r '.value')
-
-          curl --header "Content-Type: application/json" \
-            --request POST \
-            --header "Authorization: Bearer $ID_TOKEN" \
-            --data '{"repositories":["acme/app"],"permissions":{"contents":"read"}}' \
-            https://<broker-host>/token
+          TOKEN=$(oidc-token \
+            --issuer https://<broker-host>/ \
+            --client-id gh-token-broker \
+            --grant-type token-exchange \
+            --subject-token-source github-actions \
+            --audience gh-token-broker \
+            --resource acme/app \
+            --scope "contents:read")
 ```
+
+`--audience` must match `oidc.audience` in the broker configuration (it's
+also sent as the RFC 8693 `audience` parameter, which the broker accepts but
+does not validate against `--resource`). `--client-id` is unchecked by the
+broker (`token_endpoint_auth_methods_supported` is `"none"`), so any
+placeholder works. `--resource` is repeatable for multiple repositories, and
+they must share one owner.

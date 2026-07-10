@@ -227,6 +227,32 @@ func TestMetadataRouteWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestOpenIDConfigurationAliasesMetadata(t *testing.T) {
+	h := newHarness(t, nil, true)
+
+	recAuth := httptest.NewRecorder()
+	h.server.Handler().ServeHTTP(recAuth, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
+	recOIDC := httptest.NewRecorder()
+	h.server.Handler().ServeHTTP(recOIDC, httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil))
+
+	if recOIDC.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recOIDC.Code, recOIDC.Body.String())
+	}
+	if recOIDC.Body.String() != recAuth.Body.String() {
+		t.Errorf("openid-configuration body = %s, want it to match oauth-authorization-server body %s", recOIDC.Body.String(), recAuth.Body.String())
+	}
+}
+
+func TestOpenIDConfigurationAbsentWhenDisabled(t *testing.T) {
+	h := newHarness(t, nil, false)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
+	h.server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("openid-configuration route must be absent (404) when disabled, got %d", rec.Code)
+	}
+}
+
 func TestTokenIssuedWhenEnabled(t *testing.T) {
 	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
 	rec := doToken(h.server.Handler(), baseTokenForm())
@@ -480,16 +506,16 @@ func TestTokenExchangeRejectsMultiOwnerResource(t *testing.T) {
 	}
 }
 
-func TestTokenExchangeRejectsMismatchedAudience(t *testing.T) {
+func TestTokenExchangeIgnoresMismatchedAudience(t *testing.T) {
 	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
 	form := baseTokenForm()
 	form.Set("audience", "other")
 	rec := doToken(h.server.Handler(), form)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if code := oauthError(t, rec); code != "invalid_target" {
-		t.Errorf("error = %s, want invalid_target", code)
+	if !h.minter.called {
+		t.Fatal("minter should have been called despite audience not matching resource owner")
 	}
 }
 
