@@ -1,11 +1,12 @@
 // Package server exposes the HTTP API: workflow-dispatch (always on), and,
 // gated by tokenIssuanceEnabled, three token-issuance surfaces — an RFC 8693
-// OAuth 2.0 Token Exchange endpoint at /token, its RFC 8414 metadata
-// document, and a simpler header-authenticated JSON endpoint at
-// /actions/exchange for GitHub Actions callers that don't need OAuth
-// ceremony — plus healthz. All token-issuing routes go through the same
-// policy evaluation and the same token-minting chokepoint; CEL policies
-// cannot and do not distinguish which route a caller used.
+// OAuth 2.0 Token Exchange endpoint at /token, its metadata document (served
+// under both the RFC 8414 and OpenID Connect Discovery well-known paths so
+// either kind of client can find it), and a simpler header-authenticated
+// JSON endpoint at /actions/exchange for GitHub Actions callers that don't
+// need OAuth ceremony — plus healthz. All token-issuing routes go through
+// the same policy evaluation and the same token-minting chokepoint; CEL
+// policies cannot and do not distinguish which route a caller used.
 package server
 
 import (
@@ -123,6 +124,10 @@ func (s *Server) Handler() http.Handler {
 	if s.tokenIssuanceEnabled {
 		mux.HandleFunc("POST /token", s.handleToken)
 		mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.handleMetadata)
+		// Also served under the OIDC Discovery path so RFC-8693 clients that
+		// only know how to discover via OpenID Connect Discovery (e.g.
+		// oidc-token-cli) can find the token endpoint too.
+		mux.HandleFunc("GET /.well-known/openid-configuration", s.handleMetadata)
 		mux.HandleFunc("POST /actions/exchange", s.handleActionsExchange)
 	}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -427,12 +432,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeOAuthError(w, http.StatusBadRequest, errInvalidTarget, "all resource values must be owner/repo and share one owner")
 		return
 	}
-	for _, aud := range form["audience"] {
-		if aud != owner {
-			writeOAuthError(w, http.StatusBadRequest, errInvalidTarget, "audience must match the owner derived from resource")
-			return
-		}
-	}
+	// audience, if present, is not validated against owner: resource is the
+	// sole source of truth for the target scope, and RFC 8693 does not
+	// require audience to match it. Some clients (e.g. oidc-token-cli) reuse
+	// their subject-token audience for this parameter, which need not equal
+	// the resource owner.
 
 	perms, ok := decodeScope(form.Get("scope"))
 	if !ok {
