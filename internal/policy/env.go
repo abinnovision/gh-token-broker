@@ -1,21 +1,23 @@
-// Package policy compiles operator-authored CEL rules once at construction and
-// evaluates caller/request context against them, first-match-wins,
-// default-reject.
+// Package policy compiles operator-authored CEL policies once at construction
+// and evaluates caller/request context against them as an additive,
+// default-reject allow set.
 package policy
 
-import "github.com/google/cel-go/cel"
+import (
+	"reflect"
 
-// Variable names exposed to CEL. Nothing else is exposed — only id-anchored,
-// verified OIDC claims and the explicit request/action context are
-// policy-decidable.
-const (
-	VarCaller   = "caller"          // verified id-anchored OIDC claims
-	VarAdvisory = "caller_advisory" // advisory-only claims — see below
-	VarRequest  = "request"         // caller-supplied desired scope for token issuance (untrusted)
-	VarAction   = "action"          // dispatch target for workflow-dispatch (untrusted)
+	"github.com/google/cel-go/cel"
+	"github.com/google/cel-go/ext"
 )
 
-// NewEnv builds the CEL environment shared by all rule expressions.
+// Variable names exposed to CEL. Nothing else is exposed — only verified OIDC
+// claims and the normalized request context are policy-decidable.
+const (
+	VarCaller  = "caller"
+	VarRequest = "request"
+)
+
+// NewEnv builds the CEL environment shared by all policy expressions.
 //
 // No string extension functions or contains/startsWith helpers are
 // registered, so operators can't write an unanchored match like
@@ -23,19 +25,19 @@ const (
 // satisfy — only exact equality (==) and list membership (in [...]) are
 // available.
 //
-// caller_advisory carries fork-influenceable, event-derived claims (ref,
-// workflow, actor) for logging/inspection only. Rule authors must never use
-// caller_advisory in an allow decision — CEL can't enforce that, so it's a
-// code-review rule: reject any policy rule that reads caller_advisory.
-//
-// caller and caller_advisory are map<string,string>. request and action are
-// map<string,dyn> because they carry heterogeneous shapes (repository lists,
-// permission maps, action inputs).
+// caller and request are native Go structs, so unknown field references fail
+// policy compilation at startup. request.workflow_dispatch is an optional
+// additive field that is populated only for workflow-dispatch requests.
 func NewEnv() (*cel.Env, error) {
 	return cel.NewEnv(
-		cel.Variable(VarCaller, cel.MapType(cel.StringType, cel.StringType)),
-		cel.Variable(VarAdvisory, cel.MapType(cel.StringType, cel.StringType)),
-		cel.Variable(VarRequest, cel.MapType(cel.StringType, cel.DynType)),
-		cel.Variable(VarAction, cel.MapType(cel.StringType, cel.DynType)),
+		cel.OptionalTypes(),
+		cel.Variable(VarCaller, cel.ObjectType("policy.Caller")),
+		cel.Variable(VarRequest, cel.ObjectType("policy.Request")),
+		ext.NativeTypes(
+			reflect.TypeOf(Caller{}),
+			reflect.TypeOf(Request{}),
+			reflect.TypeOf(WorkflowDispatch{}),
+			ext.ParseStructTags(true),
+		),
 	)
 }

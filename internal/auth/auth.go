@@ -16,27 +16,17 @@ import (
 // provider. Pinning it rejects alg=none and RS/HS confusion (INV-5).
 const ExpectedAlg = "RS256"
 
-// Identity holds the verified claims from a GitHub Actions OIDC token.
-//
-// The first group is id-anchored and policy-authoritative (INV-4). The
-// advisory group is event-derived/fork-influenceable and MUST NOT be used to
-// decide a grant; it is carried for logging/inspection only.
+// Identity holds the verified, id-anchored claims from a GitHub Actions OIDC
+// token that may be used in policy evaluation.
 type Identity struct {
-	// Policy-authoritative, id-anchored claims.
 	Repository        string
 	RepositoryID      string
 	RepositoryOwner   string
 	RepositoryOwnerID string
-	JobWorkflowRef    string // full string incl. ref suffix, authoritative
-
-	// Advisory only — never a deciding factor for a grant.
-	Ref      string
-	Workflow string
-	Actor    string
+	JobWorkflowRef    string // full string including the ref suffix
 }
 
-// PolicyClaims returns the id-anchored claims as a string map for binding to
-// the CEL `caller` variable.
+// PolicyClaims returns the verified claims in the audit-log representation.
 func (id Identity) PolicyClaims() map[string]string {
 	return map[string]string{
 		"repository":          id.Repository,
@@ -47,16 +37,6 @@ func (id Identity) PolicyClaims() map[string]string {
 	}
 }
 
-// AdvisoryClaims returns the advisory-only claims for binding to the CEL
-// `caller_advisory` variable (never to be used in an allow decision).
-func (id Identity) AdvisoryClaims() map[string]string {
-	return map[string]string{
-		"ref":      id.Ref,
-		"workflow": id.Workflow,
-		"actor":    id.Actor,
-	}
-}
-
 // claims mirrors the subset of the GitHub Actions OIDC token we consume.
 type claims struct {
 	Repository        string `json:"repository"`
@@ -64,9 +44,6 @@ type claims struct {
 	RepositoryOwner   string `json:"repository_owner"`
 	RepositoryOwnerID string `json:"repository_owner_id"`
 	JobWorkflowRef    string `json:"job_workflow_ref"`
-	Ref               string `json:"ref"`
-	Workflow          string `json:"workflow"`
-	Actor             string `json:"actor"`
 	Exp               int64  `json:"exp"`
 	Iat               int64  `json:"iat"`
 	Nbf               int64  `json:"nbf"`
@@ -140,8 +117,5 @@ func (a *Authenticator) Authenticate(ctx context.Context, rawToken string) (*Ide
 		RepositoryOwner:   c.RepositoryOwner,
 		RepositoryOwnerID: c.RepositoryOwnerID,
 		JobWorkflowRef:    c.JobWorkflowRef,
-		Ref:               c.Ref,
-		Workflow:          c.Workflow,
-		Actor:             c.Actor,
 	}, nil
 }

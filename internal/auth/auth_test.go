@@ -68,9 +68,6 @@ func validClaims() jwt.MapClaims {
 		"repository_owner":    "acme",
 		"repository_owner_id": "456",
 		"job_workflow_ref":    "acme/app/.github/workflows/ci.yml@refs/heads/main",
-		"ref":                 "refs/heads/main",
-		"workflow":            "CI",
-		"actor":               "octocat",
 	}
 }
 
@@ -83,9 +80,6 @@ func TestValidTokenHappyPath(t *testing.T) {
 	if id.Repository != "acme/app" || id.RepositoryOwner != "acme" ||
 		id.JobWorkflowRef != "acme/app/.github/workflows/ci.yml@refs/heads/main" {
 		t.Fatalf("id-anchored claims not extracted: %+v", id)
-	}
-	if id.Actor != "octocat" {
-		t.Fatalf("advisory actor not extracted: %+v", id)
 	}
 }
 

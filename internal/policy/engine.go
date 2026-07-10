@@ -3,60 +3,92 @@ package policy
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
 
 	"github.com/abinnovision/gh-token-broker/internal/config"
+	"github.com/abinnovision/gh-token-broker/internal/perm"
 )
 
-// Grant is the operator-authored static scope a matched rule confers. It is a
-// copy of the config grant, never derived from request data.
+// Grant is the aggregate of the static permissions contributed by matching
+// policies. It is never derived from request data.
 type Grant struct {
-	Repositories []string
-	Permissions  map[string]string
+	Permissions map[string]string
 }
 
-// Decision is the outcome of evaluating one request against the rule chain.
+// Scope is the exact permission scope an endpoint requires for an operation.
+// Repository authorization belongs in policy conditions.
+type Scope struct {
+	Permissions map[string]string
+}
+
+// Caller is the complete, verified OIDC identity exposed to CEL. Its fixed
+// shape makes unknown claim references configuration errors at startup.
+type Caller struct {
+	Repository        string `cel:"repository"`
+	RepositoryID      string `cel:"repository_id"`
+	RepositoryOwner   string `cel:"repository_owner"`
+	RepositoryOwnerID string `cel:"repository_owner_id"`
+	JobWorkflowRef    string `cel:"job_workflow_ref"`
+}
+
+// Request is the normalized request context exposed to CEL. Repositories are
+// always populated: caller-supplied for token issuance and derived from the
+// dispatch target for workflow dispatch.
+type Request struct {
+	Repositories     []string          `cel:"repositories"`
+	WorkflowDispatch *WorkflowDispatch `cel:"workflow_dispatch"`
+}
+
+// WorkflowDispatch is the additive workflow-dispatch context. It is present
+// only when Request.WorkflowDispatch is non-nil; arbitrary workflow inputs
+// remain outside CEL policy evaluation.
+type WorkflowDispatch struct {
+	Owner    string `cel:"owner"`
+	Repo     string `cel:"repo"`
+	Ref      string `cel:"ref"`
+	Workflow string `cel:"workflow"`
+}
+
+// Decision is the outcome of evaluating one request against every policy.
 type Decision struct {
-	// Matched is true iff some rule's `when` evaluated true (and did not
-	// fail closed). When false, the request is denied (deny-by-default).
-	Matched bool
-	// RuleName is the matched rule's name, or "" when nothing matched.
-	RuleName string
-	// Grant is the matched rule's static grant; zero value when unmatched.
+	// Allowed is true only when at least one policy matched and their combined
+	// grant fully covers the required scope.
+	Allowed bool
+	// MatchedPolicies names every policy whose condition evaluated true.
+	MatchedPolicies []string
+	// SkippedPolicies names policies whose CEL evaluation failed at runtime.
+	// They are logged and do not block matching policies.
+	SkippedPolicies []string
+	// Grant is the aggregate static grant from MatchedPolicies.
 	Grant Grant
 }
 
-// Input carries the strictly-typed activation values for one evaluation.
-// Request is nil for a workflow-dispatch evaluation; Action is nil for a
-// token-issuance evaluation. Nil maps are bound as empty maps so any rule
-// expression evaluates without an unbound-variable error.
+// Input carries the strictly typed activation values for one evaluation.
 type Input struct {
-	Caller   map[string]string
-	Advisory map[string]string
-	Request  map[string]any
-	Action   map[string]any
+	Caller  Caller
+	Request Request
 }
 
-type compiledRule struct {
-	name    string
-	when    cel.Program
-	grant   Grant
-	onError string // skip | reject
+type compiledPolicy struct {
+	name      string
+	condition cel.Program
+	grant     Grant
 }
 
-// Engine evaluates requests against the configured rule chain. Compiled
+// Engine evaluates requests against the configured policy set. Compiled
 // cel.Programs are safe for concurrent use, so one Engine serves all requests.
 type Engine struct {
-	rules           []compiledRule
+	policies        []compiledPolicy
 	maxRepositories int
 	logger          *slog.Logger
 }
 
-// New compiles every rule's `when` expression once from operator config
+// New compiles every policy condition once from operator config
 // (never from request data) and fails fast on the first error, naming the
-// offending rule. cel.CostLimit is applied to every program.
+// offending policy. cel.CostLimit is applied to every program.
 func New(cfg *config.Config, logger *slog.Logger) (*Engine, error) {
 	env, err := NewEnv()
 	if err != nil {
@@ -66,20 +98,15 @@ func New(cfg *config.Config, logger *slog.Logger) (*Engine, error) {
 		maxRepositories: cfg.Policy.MaxRepositories,
 		logger:          logger,
 	}
-	for _, r := range cfg.Policy.Rules {
-		prg, err := compile(env, r.Name, r.When, cfg.Policy.CostLimit)
+	for _, p := range cfg.Policy.Policies {
+		prg, err := compile(env, p.Name, p.Condition, cfg.Policy.CostLimit)
 		if err != nil {
 			return nil, err
 		}
-		onError := r.OnError
-		if onError == "" {
-			onError = "reject"
-		}
-		e.rules = append(e.rules, compiledRule{
-			name:    r.Name,
-			when:    prg,
-			grant:   Grant{Repositories: r.Grant.Repositories, Permissions: r.Grant.Permissions},
-			onError: onError,
+		e.policies = append(e.policies, compiledPolicy{
+			name:      p.Name,
+			condition: prg,
+			grant:     Grant{Permissions: p.Grant.Permissions},
 		})
 	}
 	return e, nil
@@ -87,84 +114,84 @@ func New(cfg *config.Config, logger *slog.Logger) (*Engine, error) {
 
 // compile checks the expression yields a bool and wires the per-program cost
 // limit.
-func compile(env *cel.Env, rule, expr string, costLimit uint64) (cel.Program, error) {
+func compile(env *cel.Env, policy, expr string, costLimit uint64) (cel.Program, error) {
 	ast, iss := env.Compile(expr)
 	if iss.Err() != nil {
-		return nil, fmt.Errorf("rule %q: compile when: %w", rule, iss.Err())
+		return nil, fmt.Errorf("policy %q: compile condition: %w", policy, iss.Err())
 	}
 	out := ast.OutputType()
 	if out.Kind() != types.DynKind && out.Kind() != types.BoolKind {
-		return nil, fmt.Errorf("rule %q: when must evaluate to bool, got %s", rule, out)
+		return nil, fmt.Errorf("policy %q: condition must evaluate to bool, got %s", policy, out)
 	}
 	prg, err := env.Program(ast, cel.CostLimit(costLimit))
 	if err != nil {
-		return nil, fmt.Errorf("rule %q: program when: %w", rule, err)
+		return nil, fmt.Errorf("policy %q: program condition: %w", policy, err)
 	}
 	return prg, nil
 }
 
-// Evaluate walks the rules in config order; the first rule whose `when` is
-// true determines the grant (first-match-wins, so grants are never combined
-// across rules). No match denies (deny-by-default).
+// Evaluate evaluates every policy without relying on configuration order.
+// Every matching policy contributes to a combined static grant. A request is
+// allowed only when that grant fully covers required. Runtime CEL failures are
+// logged and skipped; no matching policy denies by default.
 //
 // It returns a non-nil error only for an operational rejection that must not
 // be silently absorbed — specifically an oversized request.repositories list,
 // which must be rejected outright, never truncated.
-func (e *Engine) Evaluate(in Input) (Decision, error) {
-	if err := e.checkListCaps(in.Request); err != nil {
+func (e *Engine) Evaluate(in Input, required Scope) (Decision, error) {
+	if err := e.checkListCaps(in.Request.Repositories); err != nil {
 		return Decision{}, err
 	}
 
 	vars := map[string]any{
-		VarCaller:   nonNilStr(in.Caller),
-		VarAdvisory: nonNilStr(in.Advisory),
-		VarRequest:  nonNilAny(in.Request),
-		VarAction:   nonNilAny(in.Action),
+		VarCaller:  in.Caller,
+		VarRequest: in.Request,
 	}
 
-	for _, r := range e.rules {
-		matched, err := evalBool(r.when, vars)
+	decision := Decision{Grant: Grant{Permissions: map[string]string{}}}
+	for _, p := range e.policies {
+		matched, err := evalBool(p.condition, vars)
 		if err != nil {
-			// Fail closed on a security rule: onError=reject halts the chain
-			// and denies; onError=skip continues to the next rule.
-			e.logger.Warn("rule evaluation error",
-				"rule", r.name, "onError", r.onError, "error", err.Error())
-			if r.onError == "reject" {
-				return Decision{Matched: false, RuleName: r.name}, nil
-			}
+			e.logger.Warn("policy evaluation error", "policy", p.name, "error", err.Error())
+			decision.SkippedPolicies = append(decision.SkippedPolicies, p.name)
 			continue
 		}
 		if matched {
-			return Decision{Matched: true, RuleName: r.name, Grant: r.grant}, nil
+			decision.MatchedPolicies = append(decision.MatchedPolicies, p.name)
+			mergePermissions(decision.Grant.Permissions, p.grant.Permissions)
 		}
 	}
-	return Decision{Matched: false}, nil
+
+	sort.Strings(decision.MatchedPolicies)
+	sort.Strings(decision.SkippedPolicies)
+	decision.Allowed = len(decision.MatchedPolicies) > 0 &&
+		coversPermissions(required.Permissions, decision.Grant.Permissions)
+	return decision, nil
+}
+
+func mergePermissions(destination, source map[string]string) {
+	for key, level := range perm.Normalize(source) {
+		existing, ok := destination[key]
+		if !ok || perm.Satisfies(map[string]string{key: existing}, map[string]string{key: level}) {
+			destination[key] = level
+		}
+	}
+}
+
+func coversPermissions(required, granted map[string]string) bool {
+	if len(perm.Normalize(required)) != len(required) {
+		return false
+	}
+	return perm.Satisfies(required, granted)
 }
 
 // checkListCaps enforces the request.repositories cap before the list is
-// bound as an activation variable. Oversized lists are rejected, never
+// bound as a CEL activation value. Oversized lists are rejected, never
 // truncated.
-func (e *Engine) checkListCaps(request map[string]any) error {
-	if request == nil {
-		return nil
-	}
-	repos, ok := request["repositories"]
-	if !ok {
-		return nil
-	}
-	list, ok := repos.([]string)
-	if !ok {
-		if anyList, ok2 := repos.([]any); ok2 {
-			if len(anyList) > e.maxRepositories {
-				return fmt.Errorf("request.repositories has %d entries, exceeds cap of %d",
-					len(anyList), e.maxRepositories)
-			}
-		}
-		return nil
-	}
-	if len(list) > e.maxRepositories {
+func (e *Engine) checkListCaps(repositories []string) error {
+	if len(repositories) > e.maxRepositories {
 		return fmt.Errorf("request.repositories has %d entries, exceeds cap of %d",
-			len(list), e.maxRepositories)
+			len(repositories), e.maxRepositories)
 	}
 	return nil
 }
@@ -179,18 +206,4 @@ func evalBool(prg cel.Program, vars map[string]any) (bool, error) {
 		return false, fmt.Errorf("expression returned %s, want bool", out.Type().TypeName())
 	}
 	return b, nil
-}
-
-func nonNilStr(m map[string]string) map[string]string {
-	if m == nil {
-		return map[string]string{}
-	}
-	return m
-}
-
-func nonNilAny(m map[string]any) map[string]any {
-	if m == nil {
-		return map[string]any{}
-	}
-	return m
 }

@@ -94,7 +94,7 @@ func run(logger *slog.Logger, configPath string) error {
 	logger.Info("listening",
 		"bind", cfg.Server.Bind,
 		"version", version,
-		"rules", len(cfg.Policy.Rules),
+		"policies", len(cfg.Policy.Policies),
 		"token_issuance_enabled", cfg.TokenIssuance.Enabled)
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err

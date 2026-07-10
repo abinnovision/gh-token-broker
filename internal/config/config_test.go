@@ -26,11 +26,10 @@ githubApp:
   appId: 12345
   privateKeyPath: /etc/gh-token-broker/app.pem
 policy:
-  rules:
+  policies:
     - name: allow-acme
-      when: caller.repository_owner == "acme"
+      condition: caller.repository_owner == "acme"
       grant:
-        repositories: ["acme/app"]
         permissions:
           contents: read
 `
@@ -52,8 +51,8 @@ func TestLoadValidConfigAppliesDefaults(t *testing.T) {
 	if cfg.Policy.CostLimit != 10000 || cfg.Policy.MaxRepositories != 256 {
 		t.Errorf("policy defaults wrong: %+v", cfg.Policy)
 	}
-	if cfg.Policy.Rules[0].OnError != "reject" {
-		t.Errorf("onError default should be reject (fail closed), got %q", cfg.Policy.Rules[0].OnError)
+	if len(cfg.Policy.Policies) != 1 || cfg.Policy.Policies[0].Name != "allow-acme" {
+		t.Errorf("policies = %+v, want allow-acme", cfg.Policy.Policies)
 	}
 	if cfg.TokenIssuance.Enabled {
 		t.Error("tokenIssuance.enabled must default to false")
@@ -65,6 +64,13 @@ func TestRejectUnknownPermissionKeyInGrant(t *testing.T) {
 	_, err := config.Load(write(t, body))
 	if err == nil {
 		t.Fatal("unknown permission key in a grant must be rejected at load")
+	}
+}
+
+func TestRejectGrantWithoutPermissions(t *testing.T) {
+	body := strings.Replace(validConfig, "        permissions:\n          contents: read\n", "", 1)
+	if _, err := config.Load(write(t, body)); err == nil {
+		t.Fatal("grant without permissions must be rejected")
 	}
 }
 
@@ -82,15 +88,37 @@ func TestRejectNoPrivateKeySource(t *testing.T) {
 	}
 }
 
-func TestRejectDuplicateRuleName(t *testing.T) {
+func TestRejectDuplicatePolicyName(t *testing.T) {
 	dup := validConfig + `
     - name: allow-acme
-      when: "true"
+      condition: "true"
       grant:
         permissions:
           contents: read
 `
 	if _, err := config.Load(write(t, dup)); err == nil {
-		t.Fatal("duplicate rule name must be rejected")
+		t.Fatal("duplicate policy name must be rejected")
+	}
+}
+
+func TestRejectLegacyPolicyProperties(t *testing.T) {
+	legacyRules := strings.Replace(validConfig, "  policies:", "  rules:", 1)
+	if _, err := config.Load(write(t, legacyRules)); err == nil {
+		t.Fatal("legacy policy.rules must be rejected")
+	}
+
+	legacyOnError := strings.Replace(validConfig, "        permissions:\n", "        onError: skip\n        permissions:\n", 1)
+	if _, err := config.Load(write(t, legacyOnError)); err == nil {
+		t.Fatal("legacy onError must be rejected")
+	}
+
+	legacyWhen := strings.Replace(validConfig, "      condition:", "      when:", 1)
+	if _, err := config.Load(write(t, legacyWhen)); err == nil {
+		t.Fatal("legacy when must be rejected")
+	}
+
+	legacyRepositories := strings.Replace(validConfig, "        permissions:\n", "        repositories: [\"acme/app\"]\n        permissions:\n", 1)
+	if _, err := config.Load(write(t, legacyRepositories)); err == nil {
+		t.Fatal("grant.repositories must be rejected")
 	}
 }

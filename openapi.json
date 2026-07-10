@@ -36,7 +36,7 @@
           },
           "400": { "description": "Malformed request, missing fields, or a disallowed field present", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "401": { "description": "Missing or invalid bearer token", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "403": { "description": "No policy rule matched, or the matched grant does not cover the required permission", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "403": { "description": "No matching policy condition, or combined permissions do not cover the action requirements", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "502": { "description": "Upstream GitHub API error", "content": { "text/plain": { "schema": { "type": "string" } } } }
         }
       }
@@ -65,7 +65,7 @@
           },
           "400": { "description": "Malformed request, empty repositories/permissions, or repositories span multiple owners", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "401": { "description": "Missing or invalid bearer token", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "403": { "description": "No policy rule matched, or narrowing produced an empty scope", "content": { "text/plain": { "schema": { "type": "string" } } } },
+          "403": { "description": "No matching policy condition, or combined permissions do not cover the request", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "502": { "description": "Upstream GitHub API error", "content": { "text/plain": { "schema": { "type": "string" } } } }
         }
       }
