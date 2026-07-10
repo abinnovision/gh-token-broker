@@ -23,10 +23,14 @@ githubApp:
   privateKeyPath: "/etc/gh-token-broker/app.pem"
   # privateKeyEnv: "GITHUB_APP_PRIVATE_KEY"
 
-# Raw scoped-token export. When false, the /token route is not registered at
-# all (see README).
+# RFC 8693 OAuth 2.0 Token Exchange. When false, /token and
+# /.well-known/oauth-authorization-server are not registered at all (see README).
 tokenIssuance:
   enabled: false
+  # Stable, publicly resolvable HTTPS URL matching how this service is
+  # externally reachable. Used verbatim as the OAuth "issuer" value and in
+  # RFC 8414 metadata. Required when enabled is true.
+  issuer: "https://gh-token-broker.example.com"
 
 policy:
   # CEL runtime cost limit per evaluation (defense against pathological policies).

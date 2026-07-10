@@ -101,6 +101,37 @@ func TestRejectDuplicatePolicyName(t *testing.T) {
 	}
 }
 
+func TestTokenIssuanceEnabledRequiresIssuer(t *testing.T) {
+	body := validConfig + "tokenIssuance:\n  enabled: true\n"
+	if _, err := config.Load(write(t, body)); err == nil {
+		t.Fatal("tokenIssuance.enabled=true without issuer must be rejected")
+	}
+}
+
+func TestTokenIssuanceEnabledRejectsNonHTTPSIssuer(t *testing.T) {
+	body := validConfig + "tokenIssuance:\n  enabled: true\n  issuer: \"http://broker.example.com\"\n"
+	if _, err := config.Load(write(t, body)); err == nil {
+		t.Fatal("non-https tokenIssuance.issuer must be rejected")
+	}
+}
+
+func TestTokenIssuanceEnabledAcceptsValidIssuer(t *testing.T) {
+	body := validConfig + "tokenIssuance:\n  enabled: true\n  issuer: \"https://broker.example.com\"\n"
+	cfg, err := config.Load(write(t, body))
+	if err != nil {
+		t.Fatalf("valid tokenIssuance config must be accepted: %v", err)
+	}
+	if cfg.TokenIssuance.Issuer != "https://broker.example.com" {
+		t.Errorf("issuer = %q", cfg.TokenIssuance.Issuer)
+	}
+}
+
+func TestTokenIssuanceDisabledDoesNotRequireIssuer(t *testing.T) {
+	if _, err := config.Load(write(t, validConfig)); err != nil {
+		t.Fatalf("tokenIssuance.enabled=false must not require an issuer: %v", err)
+	}
+}
+
 func TestRejectLegacyPolicyProperties(t *testing.T) {
 	legacyRules := strings.Replace(validConfig, "  policies:", "  rules:", 1)
 	if _, err := config.Load(write(t, legacyRules)); err == nil {

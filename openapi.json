@@ -43,14 +43,15 @@
     },
     "/token": {
       "post": {
-        "summary": "Issue a scoped token",
-        "description": "Returns a scoped GitHub App installation token to the caller. Only registered when `tokenIssuance.enabled` is true.",
-        "operationId": "issueToken",
+        "summary": "RFC 8693 OAuth 2.0 Token Exchange",
+        "description": "Exchanges a GitHub Actions OIDC ID token (`subject_token`) for a scoped GitHub App installation token. Only registered when `tokenIssuance.enabled` is true. Only `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` is supported; any other grant_type is rejected with `unsupported_grant_type`. Caller identity is verified from `subject_token`, not the `Authorization` header.",
+        "operationId": "tokenExchange",
+        "security": [],
         "requestBody": {
           "required": true,
           "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/TokenRequest" }
+            "application/x-www-form-urlencoded": {
+              "schema": { "$ref": "#/components/schemas/TokenExchangeRequest" }
             }
           }
         },
@@ -59,7 +60,40 @@
             "description": "Token issued",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/TokenResponse" }
+                "schema": { "$ref": "#/components/schemas/TokenExchangeResponse" }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request, unsupported_grant_type, invalid_grant, invalid_scope, or invalid_target",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OAuthError" } } }
+          },
+          "502": {
+            "description": "server_error: upstream GitHub API error",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OAuthError" } } }
+          }
+        }
+      }
+    },
+    "/actions/exchange": {
+      "post": {
+        "summary": "Issue a scoped token (header-authenticated)",
+        "description": "GitHub-Actions-native alternative to the RFC 8693 /token endpoint: returns a scoped GitHub App installation token to the caller using `Authorization: Bearer <OIDC token>` and a plain JSON contract, with no OAuth ceremony. Only registered when `tokenIssuance.enabled` is true. Goes through the same policy evaluation and token-minting chokepoint as /token; CEL policies cannot distinguish which of the two endpoints was used.",
+        "operationId": "actionsExchange",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ActionsExchangeRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token issued",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ActionsExchangeResponse" }
               }
             }
           },
@@ -67,6 +101,23 @@
           "401": { "description": "Missing or invalid bearer token", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "403": { "description": "No matching policy condition, or combined permissions do not cover the request", "content": { "text/plain": { "schema": { "type": "string" } } } },
           "502": { "description": "Upstream GitHub API error", "content": { "text/plain": { "schema": { "type": "string" } } } }
+        }
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "summary": "RFC 8414 authorization server metadata",
+        "operationId": "authorizationServerMetadata",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Metadata document",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthorizationServerMetadata" }
+              }
+            }
+          }
         }
       }
     },
@@ -131,7 +182,7 @@
           }
         }
       },
-      "TokenRequest": {
+      "ActionsExchangeRequest": {
         "type": "object",
         "required": ["repositories", "permissions"],
         "properties": {
@@ -147,7 +198,7 @@
           }
         }
       },
-      "TokenResponse": {
+      "ActionsExchangeResponse": {
         "type": "object",
         "properties": {
           "token": { "type": "string" },
@@ -157,6 +208,87 @@
             "additionalProperties": { "type": "string" }
           },
           "repositories": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      },
+      "TokenExchangeRequest": {
+        "type": "object",
+        "required": ["grant_type", "subject_token", "subject_token_type", "resource"],
+        "properties": {
+          "grant_type": {
+            "type": "string",
+            "enum": ["urn:ietf:params:oauth:grant-type:token-exchange"]
+          },
+          "subject_token": {
+            "type": "string",
+            "description": "The GitHub Actions OIDC ID token identifying the caller."
+          },
+          "subject_token_type": {
+            "type": "string",
+            "enum": ["urn:ietf:params:oauth:token-type:id_token"]
+          },
+          "resource": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "One `owner/repo` value per target repository (repeated form key). All values must share one owner.",
+            "example": ["acme/app"]
+          },
+          "audience": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Optional; if present every value must equal the owner derived from resource."
+          },
+          "scope": {
+            "type": "string",
+            "description": "Space-delimited `permission:level` tokens, e.g. \"contents:write issues:read\".",
+            "example": "contents:read"
+          },
+          "requested_token_type": {
+            "type": "string",
+            "enum": ["urn:ietf:params:oauth:token-type:access_token"]
+          }
+        },
+        "additionalProperties": false
+      },
+      "TokenExchangeResponse": {
+        "type": "object",
+        "properties": {
+          "access_token": { "type": "string" },
+          "issued_token_type": {
+            "type": "string",
+            "enum": ["urn:ietf:params:oauth:token-type:access_token"]
+          },
+          "token_type": { "type": "string", "example": "bearer" },
+          "expires_in": { "type": "integer", "description": "Seconds until expiry." },
+          "scope": {
+            "type": "string",
+            "description": "Present only when the granted scope differs from the requested scope."
+          }
+        }
+      },
+      "OAuthError": {
+        "type": "object",
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": ["invalid_request", "unsupported_grant_type", "invalid_grant", "invalid_scope", "invalid_target", "server_error"]
+          },
+          "error_description": { "type": "string" }
+        }
+      },
+      "AuthorizationServerMetadata": {
+        "type": "object",
+        "properties": {
+          "issuer": { "type": "string", "format": "uri" },
+          "token_endpoint": { "type": "string", "format": "uri" },
+          "grant_types_supported": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "token_endpoint_auth_methods_supported": {
             "type": "array",
             "items": { "type": "string" }
           }
