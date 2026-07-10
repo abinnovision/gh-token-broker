@@ -21,8 +21,10 @@ type Event struct {
 	// Caller carries the id-anchored OIDC claims (repository, repository_owner,
 	// job_workflow_ref, ...).
 	Caller map[string]string
-	// MatchedRule is the name of the matched policy rule, or "no rule matched".
-	MatchedRule string
+	// MatchedPolicies names every policy that contributed to the decision.
+	MatchedPolicies []string
+	// SkippedPolicies names policies whose CEL evaluation failed at runtime.
+	SkippedPolicies []string
 	// RequestedScope and ComputedScope describe the requested vs. finally
 	// granted scope. Values are human-readable summaries, never tokens.
 	RequestedScope map[string]any
@@ -47,7 +49,8 @@ func (a *Logger) Log(ev Event) {
 		"operation", ev.Operation,
 		"decision", string(ev.Decision),
 		"caller", ev.Caller,
-		"matched_rule", ev.MatchedRule,
+		"matched_policies", ev.MatchedPolicies,
+		"skipped_policies", ev.SkippedPolicies,
 		"token_issued", ev.TokenIssued,
 	}
 	if ev.RequestedScope != nil {

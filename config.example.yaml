@@ -1,8 +1,8 @@
 # gh-token-broker example configuration.
 #
-# Policy is CEL-only: every rule is a CEL `when` condition plus a static,
-# operator-authored `grant`. Rules are evaluated in order, first-match-wins;
-# if none match, the request is denied (deny-by-default).
+# Policy is CEL-only: every policy has a CEL `condition` plus a static,
+# operator-authored permission grant. Every matching policy contributes to one
+# combined permission grant; policy conditions authorize repositories.
 
 server:
   bind: ":8080"
@@ -29,29 +29,24 @@ tokenIssuance:
   enabled: false
 
 policy:
-  # CEL runtime cost limit per evaluation (defense against pathological rules).
+  # CEL runtime cost limit per evaluation (defense against pathological policies).
   costLimit: 10000
   # Cap on a caller-supplied request.repositories list before it is bound as a
   # CEL variable. Oversized requests are rejected, never truncated.
   maxRepositories: 256
-  rules:
+  policies:
     # ANCHORED matching only: use == or `in [...]` against id-anchored caller
     # claims. Never use substring/prefix matching (no such helpers are exposed).
     - name: acme-ci-can-dispatch
-      when: 'caller.repository_owner == "acme" && caller.repository == "acme/app"'
+      condition: 'request.?workflow_dispatch.hasValue() && caller.repository_owner == "acme" && caller.repository == "acme/app" && request.workflow_dispatch.owner == "acme" && request.workflow_dispatch.repo == "app"'
       grant:
-        repositories: ["acme/app"]
         permissions:
           actions: write
           contents: read
-      onError: reject # fail closed on eval error (default)
-
-    # grant.repositories is optional. Omitting it means "when" is trusted to
-    # have already fully validated the requested/dispatched target — useful
-    # for a pattern instead of enumerating every matching repo, e.g. granting
-    # each caller access to its own "-gitops" sibling repo:
+    # Conditions authorize requested repositories directly, which supports
+    # dynamic targets without enumerating them in configuration:
     - name: gitops-sibling
-      when: 'request.repositories.all(r, r == caller.repository + "-gitops")'
+      condition: 'request.repositories.all(r, r == caller.repository + "-gitops")'
       grant:
         permissions:
           contents: read

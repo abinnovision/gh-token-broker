@@ -54,24 +54,22 @@ type PolicyConfig struct {
 	CostLimit uint64 `yaml:"costLimit"`
 	// MaxRepositories caps the size of a caller-supplied request.repositories
 	// list before it is bound as a CEL activation variable.
-	MaxRepositories int    `yaml:"maxRepositories"`
-	Rules           []Rule `yaml:"rules"`
+	MaxRepositories int      `yaml:"maxRepositories"`
+	Policies        []Policy `yaml:"policies"`
 }
 
-// Rule is one policy rule. Only When is a CEL expression; Grant is static
-// operator-authored config data. CEL only decides whether the operator's own
-// pre-declared grant applies — it can never fabricate a novel grant from
-// request data.
-type Rule struct {
-	Name    string `yaml:"name"`
-	When    string `yaml:"when"`
-	Grant   Grant  `yaml:"grant"`
-	OnError string `yaml:"onError"` // skip | reject; defaults to reject (fail closed)
+// Policy is one independent allow policy. Only Condition is a CEL expression;
+// Grant is static operator-authored config data. CEL only decides whether the
+// operator's pre-declared grant contributes to an authorization — it can
+// never fabricate a novel grant from request data.
+type Policy struct {
+	Name      string `yaml:"name"`
+	Condition string `yaml:"condition"`
+	Grant     Grant  `yaml:"grant"`
 }
 
 type Grant struct {
-	Repositories []string          `yaml:"repositories"`
-	Permissions  map[string]string `yaml:"permissions"`
+	Permissions map[string]string `yaml:"permissions"`
 }
 
 // Load reads, schema-validates, and decodes the YAML config at path, applies
@@ -145,11 +143,6 @@ func applyDefaults(cfg *Config) {
 	if cfg.Policy.MaxRepositories == 0 {
 		cfg.Policy.MaxRepositories = 256
 	}
-	for i := range cfg.Policy.Rules {
-		if cfg.Policy.Rules[i].OnError == "" {
-			cfg.Policy.Rules[i].OnError = "reject" // fail closed by default
-		}
-	}
 }
 
 // validate enforces semantic invariants beyond the structural schema.
@@ -168,12 +161,12 @@ func validate(cfg *Config) error {
 	}
 
 	seen := map[string]bool{}
-	for _, r := range cfg.Policy.Rules {
-		if seen[r.Name] {
-			return fmt.Errorf("duplicate rule name %q", r.Name)
+	for _, p := range cfg.Policy.Policies {
+		if seen[p.Name] {
+			return fmt.Errorf("duplicate policy name %q", p.Name)
 		}
-		seen[r.Name] = true
-		if err := checkPermissions(fmt.Sprintf("rule %q grant", r.Name), r.Grant.Permissions); err != nil {
+		seen[p.Name] = true
+		if err := checkPermissions(fmt.Sprintf("policy %q grant", p.Name), p.Grant.Permissions); err != nil {
 			return err
 		}
 	}
@@ -201,9 +194,9 @@ func (c *Config) Lint() []string {
 		warnings = append(warnings,
 			"tokenIssuance.enabled=true: the token-issuance endpoint is active; ensure this is intended")
 	}
-	if len(c.Policy.Rules) == 0 {
+	if len(c.Policy.Policies) == 0 {
 		warnings = append(warnings,
-			"policy.rules is empty: every request will be denied (deny-by-default)")
+			"policy.policies is empty: every request will be denied (deny-by-default)")
 	}
 	return warnings
 }

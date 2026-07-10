@@ -14,7 +14,7 @@ var levels = map[string]int{
 
 // Canonical is the allow-list of GitHub App permission keys this proxy
 // supports. Any permission key NOT in this table — whether it appears in a
-// request or in a rule/action grant — is dropped (fail closed), never passed
+// request or in a policy/action grant — is dropped (fail closed), never passed
 // through to GitHub. This is a deliberately conservative starter set; extend
 // it as new permissions are needed (and add a config-load test for the new
 // key). Names mirror GitHub's installation-token permission field names.

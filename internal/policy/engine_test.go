@@ -2,6 +2,7 @@ package policy_test
 
 import (
 	"log/slog"
+	"reflect"
 	"testing"
 
 	"github.com/abinnovision/gh-token-broker/internal/config"
@@ -25,119 +26,188 @@ func mustEngine(t *testing.T, cfg *config.Config) *policy.Engine {
 	return e
 }
 
-func callerInput(claims map[string]string) policy.Input {
-	return policy.Input{Caller: claims}
+func caller(repository, owner string) policy.Caller {
+	return policy.Caller{Repository: repository, RepositoryOwner: owner}
 }
 
-func TestDefaultRejectWhenNoRuleMatches(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Rules: []config.Rule{{
-		Name: "owner", When: `caller.repository_owner == "acme"`,
-		Grant: config.Grant{Repositories: []string{"acme/x"}, Permissions: map[string]string{"contents": "read"}},
+func input(c policy.Caller, repositories ...string) policy.Input {
+	return policy.Input{Caller: c, Request: policy.Request{Repositories: repositories}}
+}
+
+func scope(permissions map[string]string) policy.Scope {
+	return policy.Scope{Permissions: permissions}
+}
+
+func TestDefaultRejectWhenNoPolicyMatches(t *testing.T) {
+	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{{
+		Name: "owner", Condition: `caller.repository_owner == "acme"`,
+		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}}}})
-	d, err := e.Evaluate(callerInput(map[string]string{"repository_owner": "someone-else"}))
+	d, err := e.Evaluate(input(caller("acme/app", "someone-else"), "acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Matched {
-		t.Fatalf("expected default reject, got matched rule %q", d.RuleName)
+	if d.Allowed || len(d.MatchedPolicies) != 0 {
+		t.Fatalf("expected default reject, got %+v", d)
 	}
 }
 
-func TestFirstMatchWins(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Rules: []config.Rule{
-		{Name: "first", When: "true", Grant: config.Grant{Repositories: []string{"acme/a"}, Permissions: map[string]string{"contents": "read"}}},
-		{Name: "second", When: "true", Grant: config.Grant{Repositories: []string{"acme/b"}, Permissions: map[string]string{"contents": "write"}}},
+func TestMatchingPoliciesCombinePermissionsRegardlessOfOrder(t *testing.T) {
+	policies := []config.Policy{
+		{Name: "contents-read", Condition: "true", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
+		{Name: "contents-write", Condition: "true", Grant: config.Grant{Permissions: map[string]string{"contents": "write"}}},
+	}
+	required := scope(map[string]string{"contents": "write"})
+
+	forward, err := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: policies}}).
+		Evaluate(input(caller("acme/app", "acme"), "acme/app"), required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backward, err := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{policies[1], policies[0]}}}).
+		Evaluate(input(caller("acme/app", "acme"), "acme/app"), required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !forward.Allowed || !backward.Allowed || !reflect.DeepEqual(forward.Grant, backward.Grant) {
+		t.Fatalf("combined grant must be allowed and independent of policy order: forward=%+v backward=%+v", forward, backward)
+	}
+	if !reflect.DeepEqual(forward.Grant.Permissions, map[string]string{"contents": "write"}) {
+		t.Fatalf("wrong aggregate grant: %+v", forward.Grant)
+	}
+}
+
+func TestCombinedPoliciesMustFullyCoverPermissions(t *testing.T) {
+	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{{
+		Name: "contents-read", Condition: "true",
+		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
+	}}}})
+	for _, required := range []policy.Scope{
+		scope(map[string]string{"contents": "write"}),
+		scope(map[string]string{"issues": "read"}),
+	} {
+		d, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), required)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Allowed {
+			t.Fatalf("partially covered permissions must be denied: %+v", d)
+		}
+	}
+}
+
+func TestConditionMustAuthorizeRequestedRepositories(t *testing.T) {
+	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{{
+		Name:      "own-repository",
+		Condition: `request.repositories.all(r, r == caller.repository)`,
+		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
+	}}}})
+	for _, repositories := range [][]string{{"acme/app"}, {"acme/other"}} {
+		d, err := e.Evaluate(input(caller("acme/app", "acme"), repositories...), scope(map[string]string{"contents": "read"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Allowed != (repositories[0] == "acme/app") {
+			t.Fatalf("repository authorization must come from condition: repositories=%v decision=%+v", repositories, d)
+		}
+	}
+}
+
+func TestWorkflowDispatchPresenceIsOptionalAndSafe(t *testing.T) {
+	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{{
+		Name: "dispatch-app", Condition: `request.?workflow_dispatch.hasValue() && request.workflow_dispatch.owner == "acme" && request.workflow_dispatch.repo == "app"`,
+		Grant: config.Grant{Permissions: map[string]string{"actions": "write"}},
+	}}}})
+
+	tokenDecision, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), scope(map[string]string{"actions": "write"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokenDecision.Allowed || len(tokenDecision.SkippedPolicies) != 0 {
+		t.Fatalf("token request must cleanly not match dispatch policy: %+v", tokenDecision)
+	}
+
+	dispatch := input(caller("acme/app", "acme"), "acme/app")
+	dispatch.Request.WorkflowDispatch = &policy.WorkflowDispatch{Owner: "acme", Repo: "app", Ref: "main", Workflow: "ci.yml"}
+	dispatchDecision, err := e.Evaluate(dispatch, scope(map[string]string{"actions": "write"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !dispatchDecision.Allowed {
+		t.Fatalf("dispatch request must match dispatch policy: %+v", dispatchDecision)
+	}
+}
+
+func TestRuntimeEvaluationErrorIsSkipped(t *testing.T) {
+	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{
+		{Name: "broken-at-runtime", Condition: "1 / 0 == 0", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
+		{Name: "allow", Condition: "true", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
 	}}})
-	d, err := e.Evaluate(callerInput(map[string]string{"repository_owner": "acme"}))
+	d, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !d.Matched || d.RuleName != "first" {
-		t.Fatalf("first-match-wins violated: %+v", d)
-	}
-	if len(d.Grant.Repositories) != 1 || d.Grant.Repositories[0] != "acme/a" {
-		t.Fatalf("wrong grant returned: %+v", d.Grant)
+	if !d.Allowed || !reflect.DeepEqual(d.MatchedPolicies, []string{"allow"}) ||
+		!reflect.DeepEqual(d.SkippedPolicies, []string{"broken-at-runtime"}) {
+		t.Fatalf("runtime error must be skipped: %+v", d)
 	}
 }
 
-// TestAdvisoryClaimsCannotBeUsedForDecision proves a rule referencing an
-// advisory field still evaluates against caller_advisory only, and that the
-// id-anchored caller map is what a correctly-written rule keys on. The
-// adversarial case: an attacker-controlled advisory value must not flip a
-// decision that keys on the id-anchored caller map.
-func TestAdvisoryDoesNotAffectAnchoredDecision(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Rules: []config.Rule{{
-		Name: "anchored", When: `caller.repository == "acme/app"`,
-		Grant: config.Grant{Repositories: []string{"acme/app"}, Permissions: map[string]string{"contents": "read"}},
-	}}}})
-
-	// Honest caller: id-anchored repository matches; advisory is hostile but irrelevant.
-	d, err := e.Evaluate(policy.Input{
-		Caller:   map[string]string{"repository": "acme/app"},
-		Advisory: map[string]string{"ref": "refs/heads/attacker", "actor": "mallory"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !d.Matched {
-		t.Fatalf("anchored rule should match honest caller regardless of advisory: %+v", d)
-	}
-
-	// Attacker: wrong id-anchored repository, but advisory claims spoof a match.
-	d, err = e.Evaluate(policy.Input{
-		Caller:   map[string]string{"repository": "acme/evil"},
-		Advisory: map[string]string{"ref": "acme/app", "actor": "acme/app", "workflow": "acme/app"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d.Matched {
-		t.Fatalf("advisory values must never satisfy an anchored caller rule: %+v", d)
+func TestUnknownCELFieldsFailPolicyCompilation(t *testing.T) {
+	for _, condition := range []string{
+		`caller.not_a_claim == "x"`,
+		`request.not_a_field == "x"`,
+		`request.permissions.contents == "read"`,
+		`request.workflow_dispatch.not_a_field == "x"`,
+		`action.owner == "acme"`,
+		`caller_advisory.actor == "x"`,
+	} {
+		_, err := policy.New(&config.Config{Policy: config.PolicyConfig{
+			CostLimit: 10000, MaxRepositories: 256,
+			Policies: []config.Policy{{Name: "invalid", Condition: condition}},
+		}}, discard())
+		if err == nil {
+			t.Fatalf("condition %q must fail compilation", condition)
+		}
 	}
 }
 
-func TestCostLimitTrips(t *testing.T) {
-	// A comprehension over a large range with a tiny cost limit must trip the
-	// CEL cost guard, surfacing as an eval error → fail-closed deny.
+func TestCostLimitTripsAndIsSkipped(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{
-		CostLimit: 10, // deliberately tiny
-		Rules: []config.Rule{{
-			Name:    "expensive",
-			When:    `[1,2,3,4,5,6,7,8,9,10].all(x, [1,2,3,4,5,6,7,8,9,10].all(y, x + y > 0))`,
-			Grant:   config.Grant{Repositories: []string{"acme/x"}, Permissions: map[string]string{"contents": "read"}},
-			OnError: "reject",
+		CostLimit: 10,
+		Policies: []config.Policy{{
+			Name:      "expensive",
+			Condition: `[1,2,3,4,5,6,7,8,9,10].all(x, [1,2,3,4,5,6,7,8,9,10].all(y, x + y > 0))`,
+			Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 		}},
 	}})
-	d, err := e.Evaluate(callerInput(map[string]string{"repository_owner": "acme"}))
+	d, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d.Matched {
-		t.Fatalf("cost-limit trip must fail closed (no match), got %+v", d)
+	if d.Allowed || !reflect.DeepEqual(d.SkippedPolicies, []string{"expensive"}) {
+		t.Fatalf("cost-limit trip must skip policy: %+v", d)
 	}
 }
 
 func TestOversizedRepositoriesRejectedBeforeEvaluation(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{
 		MaxRepositories: 2,
-		Rules: []config.Rule{{
-			Name: "any", When: "true",
-			Grant: config.Grant{Repositories: []string{"acme/x"}, Permissions: map[string]string{"contents": "read"}},
+		Policies: []config.Policy{{
+			Name: "any", Condition: "true",
+			Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 		}},
 	}})
-	_, err := e.Evaluate(policy.Input{
-		Caller:  map[string]string{"repository_owner": "acme"},
-		Request: map[string]any{"repositories": []string{"a/1", "a/2", "a/3"}},
-	})
+	_, err := e.Evaluate(input(caller("acme/app", "acme"), "a/1", "a/2", "a/3"), scope(map[string]string{"contents": "read"}))
 	if err == nil {
 		t.Fatal("oversized repositories list must be rejected, not truncated")
 	}
 }
 
-func TestCompileErrorNamesRule(t *testing.T) {
+func TestCompileErrorNamesPolicy(t *testing.T) {
 	_, err := policy.New(&config.Config{Policy: config.PolicyConfig{
 		CostLimit: 10000, MaxRepositories: 256,
-		Rules: []config.Rule{{Name: "broken", When: "this is not CEL (("}},
+		Policies: []config.Policy{{Name: "broken", Condition: "this is not CEL (("}},
 	}}, discard())
 	if err == nil {
 		t.Fatal("expected compile error")

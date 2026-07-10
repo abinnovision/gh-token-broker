@@ -61,9 +61,9 @@
       "properties": {
         "costLimit": { "type": "integer", "minimum": 1, "default": 10000 },
         "maxRepositories": { "type": "integer", "minimum": 1, "default": 256 },
-        "rules": {
+        "policies": {
           "type": "array",
-          "items": { "$ref": "#/$defs/rule" }
+          "items": { "$ref": "#/$defs/policy" }
         }
       }
     }
@@ -77,27 +77,23 @@
     "grant": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["permissions"],
       "properties": {
-        "repositories": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
         "permissions": { "$ref": "#/$defs/permissions" }
       }
     },
-    "rule": {
+    "policy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "when", "grant"],
+      "required": ["name", "condition", "grant"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
-        "when": {
+        "condition": {
           "type": "string",
           "minLength": 1,
-          "description": "CEL expression evaluating to bool; the only CEL-evaluated part of a rule"
+          "description": "CEL expression evaluating to bool; the condition under which a policy contributes its grant"
         },
-        "grant": { "$ref": "#/$defs/grant" },
-        "onError": { "enum": ["skip", "reject"] }
+        "grant": { "$ref": "#/$defs/grant" }
       }
     }
   }

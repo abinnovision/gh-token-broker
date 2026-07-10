@@ -17,7 +17,6 @@ import (
 	"github.com/abinnovision/gh-token-broker/internal/audit"
 	"github.com/abinnovision/gh-token-broker/internal/auth"
 	"github.com/abinnovision/gh-token-broker/internal/githubapp"
-	"github.com/abinnovision/gh-token-broker/internal/perm"
 	"github.com/abinnovision/gh-token-broker/internal/policy"
 )
 
@@ -142,44 +141,31 @@ func (s *Server) handleWorkflowDispatch(w http.ResponseWriter, r *http.Request) 
 
 	target := req.Owner + "/" + req.Repo
 	decision, err := s.engine.Evaluate(policy.Input{
-		Caller:   id.PolicyClaims(),
-		Advisory: id.AdvisoryClaims(),
-		Action: map[string]any{
-			"name":     actions.WorkflowDispatch,
-			"owner":    req.Owner,
-			"repo":     req.Repo,
-			"ref":      req.Ref,
-			"workflow": req.Workflow,
-			"inputs":   req.Inputs,
+		Caller: policyCaller(id),
+		Request: policy.Request{
+			Repositories: []string{target},
+			WorkflowDispatch: &policy.WorkflowDispatch{
+				Owner:    req.Owner,
+				Repo:     req.Repo,
+				Ref:      req.Ref,
+				Workflow: req.Workflow,
+			},
 		},
-	})
+	}, policy.Scope{Permissions: requiredPerms})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if !decision.Matched {
-		s.auditDeny("workflow-dispatch", id, decision.RuleName, "no matching allow rule")
+	if !decision.Allowed {
+		s.auditDeny("workflow-dispatch", id, decision, denyReason(decision))
 		http.Error(w, "forbidden by policy", http.StatusForbidden)
 		return
 	}
 
-	finalRepos := intersectRepos([]string{target}, decision.Grant.Repositories)
-	finalPerms := perm.Intersect(requiredPerms, decision.Grant.Permissions)
-	// len(finalPerms) == 0 alone isn't enough: a rule can grant an unrelated
-	// permission (or this action's permission at too low a level) and still
-	// produce a non-empty finalPerms that doesn't cover what the action
-	// actually requires. Checking Satisfies catches that case at the policy
-	// layer instead of failing later as an opaque GitHub API rejection.
-	if len(finalRepos) == 0 || !perm.Satisfies(requiredPerms, finalPerms) {
-		s.auditDeny("workflow-dispatch", id, decision.RuleName, "policy does not grant the permissions this action requires")
-		http.Error(w, "forbidden by policy", http.StatusForbidden)
-		return
-	}
-
-	token, err := s.minter.Mint(r.Context(), req.Owner, finalRepos, finalPerms)
+	token, err := s.minter.Mint(r.Context(), req.Owner, []string{target}, requiredPerms)
 	if err != nil {
 		if errors.Is(err, githubapp.ErrEmptyScope) {
-			s.auditDeny("workflow-dispatch", id, decision.RuleName, "empty computed scope")
+			s.auditDeny("workflow-dispatch", id, decision, "empty computed scope")
 			http.Error(w, "forbidden by policy", http.StatusForbidden)
 			return
 		}
@@ -197,12 +183,13 @@ func (s *Server) handleWorkflowDispatch(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.audit.Log(audit.Event{
-		Operation:     "workflow-dispatch",
-		Decision:      audit.DecisionAllow,
-		Caller:        id.PolicyClaims(),
-		MatchedRule:   decision.RuleName,
-		ComputedScope: map[string]any{"repositories": token.Repositories, "permissions": token.Permissions},
-		TokenIssued:   false, // this endpoint never returns the token to the caller
+		Operation:       "workflow-dispatch",
+		Decision:        audit.DecisionAllow,
+		Caller:          id.PolicyClaims(),
+		MatchedPolicies: decision.MatchedPolicies,
+		SkippedPolicies: decision.SkippedPolicies,
+		ComputedScope:   map[string]any{"repositories": token.Repositories, "permissions": token.Permissions},
+		TokenIssued:     false, // this endpoint never returns the token to the caller
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":      "dispatched",
@@ -238,44 +225,30 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decision, err := s.engine.Evaluate(policy.Input{
-		Caller:   id.PolicyClaims(),
-		Advisory: id.AdvisoryClaims(),
-		Request: map[string]any{
-			"repositories": req.Repositories,
-			"permissions":  toAnyMap(req.Permissions),
-		},
-	})
+		Caller:  policyCaller(id),
+		Request: policy.Request{Repositories: req.Repositories},
+	}, policy.Scope{Permissions: req.Permissions})
 	if err != nil {
 		// Oversized request.repositories is rejected, not truncated.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	if !decision.Matched {
-		s.auditDeny("token", id, decision.RuleName, "no matching allow rule")
+	if !decision.Allowed {
+		s.auditDeny("token", id, decision, denyReason(decision))
 		http.Error(w, "forbidden by policy", http.StatusForbidden)
 		return
 	}
 
-	finalRepos := intersectRepos(req.Repositories, decision.Grant.Repositories)
-	finalPerms := perm.Intersect(req.Permissions, decision.Grant.Permissions)
-	// The request was non-empty; if narrowing produced an empty result, deny
-	// rather than escalate.
-	if len(finalRepos) == 0 || len(finalPerms) == 0 {
-		s.auditDeny("token", id, decision.RuleName, "policy narrowed scope to empty")
-		http.Error(w, "forbidden by policy", http.StatusForbidden)
-		return
-	}
-
-	owner, ok := singleOwner(finalRepos)
+	owner, ok := singleOwner(req.Repositories)
 	if !ok {
 		http.Error(w, "all repositories must share one owner", http.StatusBadRequest)
 		return
 	}
 
-	token, err := s.minter.Mint(r.Context(), owner, finalRepos, finalPerms)
+	token, err := s.minter.Mint(r.Context(), owner, req.Repositories, req.Permissions)
 	if err != nil {
 		if errors.Is(err, githubapp.ErrEmptyScope) {
-			s.auditDeny("token", id, decision.RuleName, "empty computed scope")
+			s.auditDeny("token", id, decision, "empty computed scope")
 			http.Error(w, "forbidden by policy", http.StatusForbidden)
 			return
 		}
@@ -285,13 +258,14 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.audit.Log(audit.Event{
-		Operation:      "token",
-		Decision:       audit.DecisionAllow,
-		Caller:         id.PolicyClaims(),
-		MatchedRule:    decision.RuleName,
-		RequestedScope: map[string]any{"repositories": req.Repositories, "permissions": req.Permissions},
-		ComputedScope:  map[string]any{"repositories": token.Repositories, "permissions": token.Permissions},
-		TokenIssued:    true,
+		Operation:       "token",
+		Decision:        audit.DecisionAllow,
+		Caller:          id.PolicyClaims(),
+		MatchedPolicies: decision.MatchedPolicies,
+		SkippedPolicies: decision.SkippedPolicies,
+		RequestedScope:  map[string]any{"repositories": req.Repositories, "permissions": req.Permissions},
+		ComputedScope:   map[string]any{"repositories": token.Repositories, "permissions": token.Permissions},
+		TokenIssued:     true,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token":        token.Token,
@@ -303,42 +277,23 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers -----------------------------------------------------------------
 
-func (s *Server) auditDeny(op string, id *auth.Identity, rule, reason string) {
-	matched := rule
-	if matched == "" {
-		matched = "no rule matched"
-	}
+func (s *Server) auditDeny(op string, id *auth.Identity, decision policy.Decision, reason string) {
 	s.audit.Log(audit.Event{
-		Operation:   op,
-		Decision:    audit.DecisionDeny,
-		Caller:      id.PolicyClaims(),
-		MatchedRule: matched,
-		Reason:      reason,
-		TokenIssued: false,
+		Operation:       op,
+		Decision:        audit.DecisionDeny,
+		Caller:          id.PolicyClaims(),
+		MatchedPolicies: decision.MatchedPolicies,
+		SkippedPolicies: decision.SkippedPolicies,
+		Reason:          reason,
+		TokenIssued:     false,
 	})
 }
 
-// intersectRepos returns the exact-match set intersection of want and
-// allowed, preserving want's order. An empty/nil allowed means the rule
-// declared no repository ceiling — `when` is trusted to have already
-// authorized the target, so want passes through unchanged. This only ever
-// narrows a request that asks for more than a declared ceiling permits; it
-// never grants anything `when` didn't already approve.
-func intersectRepos(want, allowed []string) []string {
-	if len(allowed) == 0 {
-		return want
+func denyReason(decision policy.Decision) string {
+	if len(decision.MatchedPolicies) == 0 {
+		return "no matching policies"
 	}
-	allow := make(map[string]bool, len(allowed))
-	for _, a := range allowed {
-		allow[a] = true
-	}
-	var out []string
-	for _, w := range want {
-		if allow[w] {
-			out = append(out, w)
-		}
-	}
-	return out
+	return "combined policy permissions do not cover requested scope"
 }
 
 func singleOwner(repos []string) (string, bool) {
@@ -360,12 +315,14 @@ func singleOwner(repos []string) (string, bool) {
 	return owner, true
 }
 
-func toAnyMap(m map[string]string) map[string]any {
-	out := make(map[string]any, len(m))
-	for k, v := range m {
-		out[k] = v
+func policyCaller(id *auth.Identity) policy.Caller {
+	return policy.Caller{
+		Repository:        id.Repository,
+		RepositoryID:      id.RepositoryID,
+		RepositoryOwner:   id.RepositoryOwner,
+		RepositoryOwnerID: id.RepositoryOwnerID,
+		JobWorkflowRef:    id.JobWorkflowRef,
 	}
-	return out
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
