@@ -116,3 +116,91 @@ func TestValidKeyAndLevel(t *testing.T) {
 		t.Fatal("ValidLevel wrong")
 	}
 }
+
+func TestLevelOrd(t *testing.T) {
+	cases := map[string]int{
+		"read":    1,
+		"write":   2,
+		"admin":   3,
+		"unknown": 0,
+	}
+	for level, want := range cases {
+		if got := perm.LevelOrd(level); got != want {
+			t.Fatalf("LevelOrd(%q) = %d, want %d", level, got, want)
+		}
+	}
+}
+
+func TestGaps(t *testing.T) {
+	tests := []struct {
+		name     string
+		required map[string]string
+		granted  map[string]string
+		check    func(t *testing.T, got map[string]string)
+	}{
+		{
+			name:     "fully satisfied",
+			required: map[string]string{"contents": "read"},
+			granted:  map[string]string{"contents": "write"},
+			check: func(t *testing.T, got map[string]string) {
+				if got != nil {
+					t.Fatalf("got %v, want nil", got)
+				}
+			},
+		},
+		{
+			name:     "missing key",
+			required: map[string]string{"contents": "read", "issues": "write"},
+			granted:  map[string]string{"contents": "read"},
+			check: func(t *testing.T, got map[string]string) {
+				if _, ok := got["issues"]; !ok {
+					t.Fatalf("expected gap for issues, got %v", got)
+				}
+				if _, ok := got["contents"]; ok {
+					t.Fatalf("contents should not have a gap, got %v", got)
+				}
+			},
+		},
+		{
+			name:     "insufficient level",
+			required: map[string]string{"contents": "write"},
+			granted:  map[string]string{"contents": "read"},
+			check: func(t *testing.T, got map[string]string) {
+				want := "need write, have read"
+				if got["contents"] != want {
+					t.Fatalf("got %q, want %q", got["contents"], want)
+				}
+			},
+		},
+		{
+			name:     "mixed",
+			required: map[string]string{"contents": "write", "issues": "read"},
+			granted:  map[string]string{"contents": "read", "issues": "write"},
+			check: func(t *testing.T, got map[string]string) {
+				if len(got) != 1 {
+					t.Fatalf("got %v, want exactly one gap", got)
+				}
+				if _, ok := got["contents"]; !ok {
+					t.Fatalf("expected gap for contents, got %v", got)
+				}
+			},
+		},
+		{
+			name:     "empty required",
+			required: map[string]string{},
+			granted:  map[string]string{"contents": "read"},
+			check: func(t *testing.T, got map[string]string) {
+				if got != nil {
+					t.Fatalf("got %v, want nil", got)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := perm.Gaps(tt.required, tt.granted)
+			tt.check(t, got)
+		})
+	}
+}

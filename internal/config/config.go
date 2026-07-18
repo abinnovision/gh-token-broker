@@ -213,6 +213,25 @@ func checkPermissions(where string, perms map[string]string) error {
 	return nil
 }
 
+// AggregateGrantPermissions merges the grant permissions across all policies,
+// keeping the highest level (read < write < admin) for each canonical key.
+// Non-canonical keys or invalid levels are dropped (fail-closed).
+func (pc PolicyConfig) AggregateGrantPermissions() map[string]string {
+	agg := map[string]string{}
+	for _, p := range pc.Policies {
+		for k, v := range p.Grant.Permissions {
+			if !perm.ValidKey(k) || !perm.ValidLevel(v) {
+				continue
+			}
+			existing, ok := agg[k]
+			if !ok || perm.LevelOrd(v) > perm.LevelOrd(existing) {
+				agg[k] = v
+			}
+		}
+	}
+	return agg
+}
+
 // Lint returns non-fatal configuration warnings.
 func (c *Config) Lint() []string {
 	var warnings []string

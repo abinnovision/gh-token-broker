@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -32,6 +33,10 @@ const defaultBaseURL = "https://api.github.com"
 // permissions", so an empty computed scope from a bug would silently escalate
 // to a full-installation token. We fail closed instead.
 var ErrEmptyScope = errors.New("githubapp: refusing to mint token with empty repository or permission scope")
+
+// ErrInsufficientScope is returned by Mint when the installation's granted
+// permissions do not cover the requested scope.
+var ErrInsufficientScope = errors.New("githubapp: installation permissions do not cover requested scope")
 
 // IntersectPermissions is the per-key minimum-level permission intersection,
 // re-exported from the leaf perm package so config validation, the server,
@@ -97,19 +102,24 @@ func loadPrivateKey(cfg config.GitHubAppConfig) ([]byte, error) {
 	}
 }
 
-// Mint resolves the installation for owner, intersects the requested
-// permissions with the installation's actual granted ceiling, and mints a
-// scoped token. repos are "owner/repo" names; every entry must share owner.
+// Mint resolves the installation for owner, verifies the installation's
+// granted permissions cover the request, and mints a scoped token. repos
+// are "owner/repo" names; every entry must share owner.
 //
-// The installation's real granted permissions are fetched at runtime and used
-// as the app ceiling (defense in depth on top of GitHub's own server-side
-// rejection), rather than trusting static config for the ceiling.
+// The installation's real granted permissions are fetched at runtime. If any
+// requested permission exceeds the installation ceiling, Mint returns an
+// error rather than silently downgrading — a reduced token would cause
+// confusing failures at the call site.
 func (c *Client) Mint(ctx context.Context, owner string, repos []string, perms map[string]string) (ScopedToken, error) {
 	inst, err := c.resolveInstallation(ctx, owner)
 	if err != nil {
 		return ScopedToken{}, err
 	}
 	ceiling := permMap(inst.GetPermissions())
+	if gaps := perm.Gaps(perms, ceiling); gaps != nil {
+		msg := formatGaps(fmt.Sprintf("githubapp: installation for %q does not cover requested permissions:", owner), gaps)
+		return ScopedToken{}, fmt.Errorf("%w: %s", ErrInsufficientScope, msg)
+	}
 	finalPerms := perm.Intersect(perms, ceiling)
 
 	shortNames := make([]string, 0, len(repos))
@@ -223,6 +233,46 @@ func permMap(p *github.InstallationPermissions) map[string]string {
 		return map[string]string{}
 	}
 	return m
+}
+
+// ValidateAppPermissions fetches the App's manifest permissions from GitHub
+// (GET /app) and verifies that they cover every key in required at a
+// sufficient level. Returns a detailed error listing each gap, or nil.
+func (c *Client) ValidateAppPermissions(ctx context.Context, required map[string]string) error {
+	if len(required) == 0 {
+		return nil
+	}
+	app, _, err := c.apps.Apps.Get(ctx, "")
+	if err != nil {
+		return fmt.Errorf("githubapp: fetch app manifest: %w", err)
+	}
+	actual := permMap(app.Permissions)
+
+	c.logger.Info("app permission validation",
+		"app_name", app.GetName(),
+		"app_permissions", actual,
+		"required_permissions", required,
+	)
+
+	gaps := perm.Gaps(required, actual)
+	if gaps == nil {
+		return nil
+	}
+	return errors.New(formatGaps("githubapp: app permissions do not cover policy grants:", gaps))
+}
+
+func formatGaps(header string, gaps map[string]string) string {
+	keys := make([]string, 0, len(gaps))
+	for k := range gaps {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString(header)
+	for _, k := range keys {
+		fmt.Fprintf(&b, "\n  - %s: %s", k, gaps[k])
+	}
+	return b.String()
 }
 
 func splitRepo(full string) (owner, repo string, ok bool) {

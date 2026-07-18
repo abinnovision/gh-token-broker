@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -183,5 +184,67 @@ func TestRejectLegacyPolicyProperties(t *testing.T) {
 	legacyRepositories := strings.Replace(validConfig, "        permissions:\n", "        repositories: [\"acme/app\"]\n        permissions:\n", 1)
 	if _, err := config.Load(write(t, legacyRepositories)); err == nil {
 		t.Fatal("grant.repositories must be rejected")
+	}
+}
+
+func TestAggregateGrantPermissions(t *testing.T) {
+	tests := []struct {
+		name     string
+		policies []config.Policy
+		want     map[string]string
+	}{
+		{
+			name:     "empty policies",
+			policies: nil,
+			want:     map[string]string{},
+		},
+		{
+			name: "single policy",
+			policies: []config.Policy{
+				{
+					Grant: config.Grant{
+						Permissions: map[string]string{"contents": "read", "issues": "write"},
+					},
+				},
+			},
+			want: map[string]string{"contents": "read", "issues": "write"},
+		},
+		{
+			name: "max level wins",
+			policies: []config.Policy{
+				{
+					Grant: config.Grant{
+						Permissions: map[string]string{"contents": "read"},
+					},
+				},
+				{
+					Grant: config.Grant{
+						Permissions: map[string]string{"contents": "write", "issues": "read"},
+					},
+				},
+			},
+			want: map[string]string{"contents": "write", "issues": "read"},
+		},
+		{
+			name: "non-canonical keys excluded",
+			policies: []config.Policy{
+				{
+					Grant: config.Grant{
+						Permissions: map[string]string{"bogus": "admin", "contents": "read"},
+					},
+				},
+			},
+			want: map[string]string{"contents": "read"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pc := config.PolicyConfig{Policies: tt.policies}
+			got := pc.AggregateGrantPermissions()
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("AggregateGrantPermissions() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

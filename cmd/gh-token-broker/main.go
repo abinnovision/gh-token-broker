@@ -74,6 +74,11 @@ func run(logger *slog.Logger, configPath string) error {
 		return err
 	}
 
+	requiredPerms := cfg.Policy.AggregateGrantPermissions()
+	if err := ghClient.ValidateAppPermissions(ctx, requiredPerms); err != nil {
+		return err
+	}
+
 	auditLog := audit.New(logger)
 	srv := server.New(authn, engine, ghClient,
 		auditLog, logger, cfg.TokenIssuance.Issuer)

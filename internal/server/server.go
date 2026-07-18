@@ -247,6 +247,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 			writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "forbidden by policy")
 			return
 		}
+		if errors.Is(err, githubapp.ErrInsufficientScope) {
+			s.auditDeny("token", id, decision, "installation permissions insufficient")
+			writeOAuthError(w, http.StatusBadRequest, errInvalidScope, "requested scope exceeds installation permissions")
+			return
+		}
 		s.logger.Error("mint token", "error", err.Error())
 		writeOAuthError(w, http.StatusBadGateway, errServerError, "upstream error")
 		return
