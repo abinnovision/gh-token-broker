@@ -2,6 +2,7 @@ package githubapp
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +40,7 @@ func TestMintScopedTokenFailsClosedOnEmptyScope(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := c.MintScopedToken(context.Background(), 42, tc.repos, tc.perms)
-			if err != ErrEmptyScope {
+			if !errors.Is(err, ErrEmptyScope) {
 				t.Fatalf("want ErrEmptyScope, got %v", err)
 			}
 		})
