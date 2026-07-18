@@ -43,15 +43,12 @@ type GitHubAppConfig struct {
 	PrivateKeyEnv  string `yaml:"privateKeyEnv"`
 }
 
-// TokenIssuanceConfig gates the RFC 8693 token-exchange endpoint. When
-// Enabled is false, /token and /.well-known/oauth-authorization-server are
-// not registered on the mux at all (not merely 403).
+// TokenIssuanceConfig configures the RFC 8693 token-exchange endpoint.
 type TokenIssuanceConfig struct {
-	Enabled bool `yaml:"enabled"`
 	// Issuer is the broker's own OAuth issuer identifier — a stable, absolute
 	// HTTPS URL (e.g. "https://gh-token-broker.example.com") used verbatim as
 	// the "issuer" value in RFC 8414 metadata and as the base for
-	// token_endpoint. Required when Enabled is true.
+	// token_endpoint. Required.
 	Issuer string `yaml:"issuer"`
 }
 
@@ -181,14 +178,12 @@ func validate(cfg *Config) error {
 	if cfg.GitHubApp.PrivateKeyPath != "" && cfg.GitHubApp.PrivateKeyEnv != "" {
 		return fmt.Errorf("githubApp: set only one of privateKeyPath or privateKeyEnv")
 	}
-	if cfg.TokenIssuance.Enabled {
-		if cfg.TokenIssuance.Issuer == "" {
-			return fmt.Errorf("tokenIssuance.issuer is required when tokenIssuance.enabled is true")
-		}
-		u, err := url.Parse(cfg.TokenIssuance.Issuer)
-		if err != nil || u.Scheme != "https" || u.Host == "" {
-			return fmt.Errorf("tokenIssuance.issuer must be an absolute https:// URL")
-		}
+	if cfg.TokenIssuance.Issuer == "" {
+		return fmt.Errorf("tokenIssuance.issuer is required")
+	}
+	u, err := url.Parse(cfg.TokenIssuance.Issuer)
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("tokenIssuance.issuer must be an absolute https:// URL")
 	}
 
 	seen := map[string]bool{}
@@ -221,10 +216,6 @@ func checkPermissions(where string, perms map[string]string) error {
 // Lint returns non-fatal configuration warnings.
 func (c *Config) Lint() []string {
 	var warnings []string
-	if c.TokenIssuance.Enabled {
-		warnings = append(warnings,
-			"tokenIssuance.enabled=true: the token-issuance endpoint is active; ensure this is intended")
-	}
 	if len(c.Policy.Policies) == 0 {
 		warnings = append(warnings,
 			"policy.policies is empty: every request will be denied (deny-by-default)")

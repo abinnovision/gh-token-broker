@@ -15,7 +15,7 @@ const (
 // Event is one audit record. Only id-anchored caller claims are recorded;
 // advisory claims and (obviously) any secret material are never logged.
 type Event struct {
-	// Operation is "token" or "workflow-dispatch".
+	// Operation is "token".
 	Operation string
 	Decision  Decision
 	// Caller carries the id-anchored OIDC claims (repository, repository_owner,

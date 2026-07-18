@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/abinnovision/gh-token-broker/internal/actions"
 	"github.com/abinnovision/gh-token-broker/internal/audit"
 	"github.com/abinnovision/gh-token-broker/internal/auth"
 	"github.com/abinnovision/gh-token-broker/internal/config"
@@ -50,16 +49,6 @@ func (f *fakeMinter) Mint(_ context.Context, owner string, repos []string, perms
 	return f.tok, f.err
 }
 
-type fakeDispatcher struct {
-	called bool
-	err    error
-}
-
-func (f *fakeDispatcher) Dispatch(context.Context, string, actions.Target) error {
-	f.called = true
-	return f.err
-}
-
 func acmeIdentity() *auth.Identity {
 	return &auth.Identity{
 		Repository:      "acme/app",
@@ -69,13 +58,12 @@ func acmeIdentity() *auth.Identity {
 }
 
 type harness struct {
-	server     *server.Server
-	minter     *fakeMinter
-	dispatcher *fakeDispatcher
-	audit      *bytes.Buffer
+	server *server.Server
+	minter *fakeMinter
+	audit  *bytes.Buffer
 }
 
-func newHarness(t *testing.T, policies []config.Policy, tokenEnabled bool) harness {
+func newHarness(t *testing.T, policies []config.Policy) harness {
 	t.Helper()
 	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256, Policies: policies}}
 	engine, err := policy.New(cfg, slog.New(slog.DiscardHandler))
@@ -88,20 +76,11 @@ func newHarness(t *testing.T, policies []config.Policy, tokenEnabled bool) harne
 		Permissions:  map[string]string{"contents": "read"},
 		Repositories: []string{"app"},
 	}}
-	dispatcher := &fakeDispatcher{}
 	var buf bytes.Buffer
 	auditLog := audit.New(slog.New(slog.NewJSONHandler(&buf, nil)))
-	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter, dispatcher,
-		auditLog, slog.New(slog.DiscardHandler), tokenEnabled, testIssuer)
-	return harness{server: srv, minter: minter, dispatcher: dispatcher, audit: &buf}
-}
-
-func do(h http.Handler, method, path, body string) *httptest.ResponseRecorder {
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(method, path, strings.NewReader(body))
-	req.Header.Set("Authorization", "Bearer testtoken")
-	h.ServeHTTP(rec, req)
-	return rec
+	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter,
+		auditLog, slog.New(slog.DiscardHandler), testIssuer)
+	return harness{server: srv, minter: minter, audit: &buf}
 }
 
 // baseTokenForm returns a valid RFC 8693 token-exchange request form for
@@ -146,17 +125,8 @@ func allowTokenPolicy() config.Policy {
 	}
 }
 
-func allowDispatchPolicy() config.Policy {
-	return config.Policy{
-		Name: "allow-acme-dispatch", Condition: `request.?workflow_dispatch.hasValue() && caller.repository_owner == "acme" && request.workflow_dispatch.owner == "acme" && request.workflow_dispatch.repo == "app"`,
-		Grant: config.Grant{
-			Permissions: map[string]string{"actions": "write", "contents": "read"},
-		},
-	}
-}
-
 func TestHealthz(t *testing.T) {
-	h := newHarness(t, nil, false)
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	h.server.Handler().ServeHTTP(rec, req)
@@ -166,7 +136,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestOpenAPISpecServed(t *testing.T) {
-	h := newHarness(t, nil, false)
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
 	h.server.Handler().ServeHTTP(rec, req)
@@ -182,29 +152,8 @@ func TestOpenAPISpecServed(t *testing.T) {
 	}
 }
 
-func TestTokenRouteAbsentWhenDisabled(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, false)
-	rec := doToken(h.server.Handler(), baseTokenForm())
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("token route must be absent (404) when disabled, got %d", rec.Code)
-	}
-	if h.minter.called {
-		t.Fatal("minter must not be called")
-	}
-}
-
-func TestMetadataRouteAbsentWhenDisabled(t *testing.T) {
-	h := newHarness(t, nil, false)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
-	h.server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("metadata route must be absent (404) when disabled, got %d", rec.Code)
-	}
-}
-
 func TestMetadataRouteWhenEnabled(t *testing.T) {
-	h := newHarness(t, nil, true)
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
 	h.server.Handler().ServeHTTP(rec, req)
@@ -228,7 +177,7 @@ func TestMetadataRouteWhenEnabled(t *testing.T) {
 }
 
 func TestOpenIDConfigurationAliasesMetadata(t *testing.T) {
-	h := newHarness(t, nil, true)
+	h := newHarness(t, nil)
 
 	recAuth := httptest.NewRecorder()
 	h.server.Handler().ServeHTTP(recAuth, httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil))
@@ -243,18 +192,8 @@ func TestOpenIDConfigurationAliasesMetadata(t *testing.T) {
 	}
 }
 
-func TestOpenIDConfigurationAbsentWhenDisabled(t *testing.T) {
-	h := newHarness(t, nil, false)
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/.well-known/openid-configuration", nil)
-	h.server.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("openid-configuration route must be absent (404) when disabled, got %d", rec.Code)
-	}
-}
-
 func TestTokenIssuedWhenEnabled(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	rec := doToken(h.server.Handler(), baseTokenForm())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -297,7 +236,7 @@ func TestTokenConditionAuthorizesDynamicRepositories(t *testing.T) {
 		Condition: `request.repositories.all(r, r == caller.repository + "-gitops")`,
 		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
-	h := newHarness(t, []config.Policy{policy}, true)
+	h := newHarness(t, []config.Policy{policy})
 	form := baseTokenForm()
 	form.Set("resource", "acme/app-gitops")
 	rec := doToken(h.server.Handler(), form)
@@ -310,7 +249,7 @@ func TestTokenConditionAuthorizesDynamicRepositories(t *testing.T) {
 }
 
 func TestTokenConditionRejectsUnauthorizedRepositories(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form.Set("resource", "acme/other")
 	rec := doToken(h.server.Handler(), form)
@@ -326,7 +265,7 @@ func TestTokenConditionRejectsUnauthorizedRepositories(t *testing.T) {
 }
 
 func TestTokenIssuanceRejectsUnknownRequestedPermission(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form.Set("scope", "not_a_permission:read")
 	rec := doToken(h.server.Handler(), form)
@@ -347,7 +286,7 @@ func TestTokenDenyPathNoGitHubCallAndAudited(t *testing.T) {
 		Name: "only-other", Condition: `caller.repository_owner == "other"`,
 		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
-	h := newHarness(t, []config.Policy{policy}, true)
+	h := newHarness(t, []config.Policy{policy})
 	rec := doToken(h.server.Handler(), baseTokenForm())
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
@@ -366,7 +305,7 @@ func TestTokenAuditRecordsSkippedPolicies(t *testing.T) {
 		Name: "broken-at-runtime", Condition: "1 / 0 == 0",
 		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
-	h := newHarness(t, []config.Policy{broken, allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{broken, allowTokenPolicy()})
 	rec := doToken(h.server.Handler(), baseTokenForm())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
@@ -375,7 +314,7 @@ func TestTokenAuditRecordsSkippedPolicies(t *testing.T) {
 }
 
 func TestTokenExchangeRejectsWrongContentType(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(`{"grant_type":"x"}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -389,7 +328,7 @@ func TestTokenExchangeRejectsWrongContentType(t *testing.T) {
 }
 
 func TestTokenExchangeMissingGrantType(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form.Del("grant_type")
 	rec := doToken(h.server.Handler(), form)
@@ -402,7 +341,7 @@ func TestTokenExchangeMissingGrantType(t *testing.T) {
 }
 
 func TestTokenExchangeRejectsUnsupportedGrantType(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form.Set("grant_type", "client_credentials")
 	rec := doToken(h.server.Handler(), form)
@@ -418,7 +357,7 @@ func TestTokenExchangeRejectsUnsupportedGrantType(t *testing.T) {
 }
 
 func TestTokenExchangeRejectsActorToken(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form.Set("actor_token", "something")
 	rec := doToken(h.server.Handler(), form)
@@ -431,7 +370,7 @@ func TestTokenExchangeRejectsActorToken(t *testing.T) {
 }
 
 func TestTokenExchangeRejectsMissingSubjectToken(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form.Del("subject_token")
 	rec := doToken(h.server.Handler(), form)
@@ -444,7 +383,7 @@ func TestTokenExchangeRejectsMissingSubjectToken(t *testing.T) {
 }
 
 func TestTokenExchangeRejectsWrongSubjectTokenType(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form.Set("subject_token_type", "urn:ietf:params:oauth:token-type:jwt")
 	rec := doToken(h.server.Handler(), form)
@@ -457,7 +396,7 @@ func TestTokenExchangeRejectsWrongSubjectTokenType(t *testing.T) {
 }
 
 func TestTokenExchangeRejectsUnsupportedRequestedTokenType(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form.Set("requested_token_type", "urn:ietf:params:oauth:token-type:jwt")
 	rec := doToken(h.server.Handler(), form)
@@ -476,10 +415,9 @@ func TestTokenExchangeSubjectTokenVerificationFailureIsInvalidGrant(t *testing.T
 		t.Fatalf("policy.New: %v", err)
 	}
 	minter := &fakeMinter{}
-	dispatcher := &fakeDispatcher{}
 	auditLog := audit.New(slog.New(slog.DiscardHandler))
-	srv := server.New(fakeAuth{err: context.DeadlineExceeded}, engine, minter, dispatcher,
-		auditLog, slog.New(slog.DiscardHandler), true, testIssuer)
+	srv := server.New(fakeAuth{err: context.DeadlineExceeded}, engine, minter,
+		auditLog, slog.New(slog.DiscardHandler), testIssuer)
 
 	rec := doToken(srv.Handler(), baseTokenForm())
 	if rec.Code != http.StatusBadRequest {
@@ -494,7 +432,7 @@ func TestTokenExchangeSubjectTokenVerificationFailureIsInvalidGrant(t *testing.T
 }
 
 func TestTokenExchangeRejectsMultiOwnerResource(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form["resource"] = []string{"acme/app", "other/app"}
 	rec := doToken(h.server.Handler(), form)
@@ -507,7 +445,7 @@ func TestTokenExchangeRejectsMultiOwnerResource(t *testing.T) {
 }
 
 func TestTokenExchangeIgnoresMismatchedAudience(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	form := baseTokenForm()
 	form.Set("audience", "other")
 	rec := doToken(h.server.Handler(), form)
@@ -526,10 +464,9 @@ func TestTokenExchangeEmptyScopeMintErrorIsInvalidGrant(t *testing.T) {
 		t.Fatalf("policy.New: %v", err)
 	}
 	minter := &fakeMinter{err: githubapp.ErrEmptyScope}
-	dispatcher := &fakeDispatcher{}
 	auditLog := audit.New(slog.New(slog.DiscardHandler))
-	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter, dispatcher,
-		auditLog, slog.New(slog.DiscardHandler), true, testIssuer)
+	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter,
+		auditLog, slog.New(slog.DiscardHandler), testIssuer)
 
 	rec := doToken(srv.Handler(), baseTokenForm())
 	if rec.Code != http.StatusBadRequest {
@@ -541,7 +478,7 @@ func TestTokenExchangeEmptyScopeMintErrorIsInvalidGrant(t *testing.T) {
 }
 
 func TestActionsExchangeRouteAbsentWhenDisabled(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, false)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`)
 	if rec.Code != http.StatusNotFound {
@@ -553,7 +490,7 @@ func TestActionsExchangeRouteAbsentWhenDisabled(t *testing.T) {
 }
 
 func TestActionsExchangeIssuedWhenEnabled(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`)
 	if rec.Code != http.StatusOK {
@@ -586,7 +523,7 @@ func TestActionsExchangeConditionAuthorizesDynamicRepositories(t *testing.T) {
 		Condition: `request.repositories.all(r, r == caller.repository + "-gitops")`,
 		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
-	h := newHarness(t, []config.Policy{policy}, true)
+	h := newHarness(t, []config.Policy{policy})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/app-gitops"],"permissions":{"contents":"read"}}`)
 	if rec.Code != http.StatusOK {
@@ -598,7 +535,7 @@ func TestActionsExchangeConditionAuthorizesDynamicRepositories(t *testing.T) {
 }
 
 func TestActionsExchangeConditionRejectsUnauthorizedRepositories(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/other"],"permissions":{"contents":"read"}}`)
 	if rec.Code != http.StatusForbidden {
@@ -610,7 +547,7 @@ func TestActionsExchangeConditionRejectsUnauthorizedRepositories(t *testing.T) {
 }
 
 func TestActionsExchangeRejectsUnknownRequestedPermission(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/app"],"permissions":{"not_a_permission":"read"}}`)
 	if rec.Code != http.StatusForbidden {
@@ -627,7 +564,7 @@ func TestActionsExchangeDenyPathNoGitHubCallAndAudited(t *testing.T) {
 		Name: "only-other", Condition: `caller.repository_owner == "other"`,
 		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
-	h := newHarness(t, []config.Policy{policy}, true)
+	h := newHarness(t, []config.Policy{policy})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/exchange",
 		`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`)
 	if rec.Code != http.StatusForbidden {
@@ -640,7 +577,7 @@ func TestActionsExchangeDenyPathNoGitHubCallAndAudited(t *testing.T) {
 }
 
 func TestActionsExchangeMissingBearerIs401(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowTokenPolicy()}, true)
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/actions/exchange",
 		strings.NewReader(`{"repositories":["acme/app"],"permissions":{"contents":"read"}}`))
@@ -652,7 +589,7 @@ func TestActionsExchangeMissingBearerIs401(t *testing.T) {
 }
 
 func TestWorkflowDispatchHappyPath(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowDispatchPolicy()}, false)
+	h := newHarness(t, []config.Policy{allowDispatchPolicy()})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/workflow-dispatch",
 		`{"owner":"acme","repo":"app","ref":"refs/heads/main","workflow":"ci.yml"}`)
 	if rec.Code != http.StatusOK {
@@ -671,7 +608,7 @@ func TestWorkflowConditionAuthorizesDynamicTarget(t *testing.T) {
 		Condition: `request.?workflow_dispatch.hasValue() && (request.workflow_dispatch.owner + "/" + request.workflow_dispatch.repo) == caller.repository + "-gitops"`,
 		Grant:     config.Grant{Permissions: map[string]string{"actions": "write"}},
 	}
-	h := newHarness(t, []config.Policy{policy}, false)
+	h := newHarness(t, []config.Policy{policy})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/workflow-dispatch",
 		`{"owner":"acme","repo":"app-gitops","ref":"refs/heads/main","workflow":"ci.yml"}`)
 	if rec.Code != http.StatusOK {
@@ -694,7 +631,7 @@ func TestWorkflowDispatchDeniesWhenGrantDoesNotCoverRequiredPermission(t *testin
 			Permissions: map[string]string{"actions": "read"}, // dispatch needs write
 		},
 	}
-	h := newHarness(t, []config.Policy{policy}, false)
+	h := newHarness(t, []config.Policy{policy})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/workflow-dispatch",
 		`{"owner":"acme","repo":"app","ref":"refs/heads/main","workflow":"ci.yml"}`)
 	if rec.Code != http.StatusForbidden {
@@ -707,7 +644,7 @@ func TestWorkflowDispatchDeniesWhenGrantDoesNotCoverRequiredPermission(t *testin
 }
 
 func TestWorkflowDispatchRejectsScopeFields(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowDispatchPolicy()}, false)
+	h := newHarness(t, []config.Policy{allowDispatchPolicy()})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/workflow-dispatch",
 		`{"owner":"acme","repo":"app","ref":"refs/heads/main","workflow":"ci.yml","permissions":{"contents":"admin"}}`)
 	if rec.Code != http.StatusBadRequest {
@@ -723,7 +660,7 @@ func TestWorkflowDispatchDenyNoDispatch(t *testing.T) {
 		Name: "only-other", Condition: `caller.repository_owner == "other"`,
 		Grant: config.Grant{Permissions: map[string]string{"actions": "write"}},
 	}
-	h := newHarness(t, []config.Policy{policy}, false)
+	h := newHarness(t, []config.Policy{policy})
 	rec := do(h.server.Handler(), http.MethodPost, "/actions/workflow-dispatch",
 		`{"owner":"acme","repo":"app","ref":"refs/heads/main","workflow":"ci.yml"}`)
 	if rec.Code != http.StatusForbidden {
@@ -736,7 +673,7 @@ func TestWorkflowDispatchDenyNoDispatch(t *testing.T) {
 }
 
 func TestMissingBearerIs401(t *testing.T) {
-	h := newHarness(t, []config.Policy{allowDispatchPolicy()}, false)
+	h := newHarness(t, []config.Policy{allowDispatchPolicy()})
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/actions/workflow-dispatch",
 		strings.NewReader(`{"owner":"acme","repo":"app","ref":"main","workflow":"ci.yml"}`))
