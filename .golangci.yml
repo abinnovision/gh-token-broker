@@ -1,11 +1,84 @@
-# gh-token-broker handles credentials, so it enables a stricter set than the
-# reference project. gosec is included because this service mints and handles
-# GitHub tokens.
 version: "2"
 
+run:
+  timeout: 5m
+  tests: true
+
 linters:
+  default: none
   enable:
     - errcheck
     - govet
+    - ineffassign
     - staticcheck
+    - unused
     - gosec
+    - bodyclose
+    - noctx
+    - gocritic
+    - revive
+    - unconvert
+    - unparam
+    - misspell
+    - errorlint
+    - copyloopvar
+    - exhaustive
+
+  settings:
+    errcheck:
+      check-type-assertions: true
+      check-blank: false
+
+    gosec:
+      excludes:
+        - G104 # duplicate of errcheck, already covered above
+
+    revive:
+      severity: warning
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+        - name: unreachable-code
+        - name: var-declaration
+
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+
+    unparam:
+      check-exported: false
+
+    exhaustive:
+      default-signifies-exhaustive: true
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - noctx
+          - unparam
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/abinnovision/gh-token-broker
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
