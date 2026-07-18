@@ -87,6 +87,14 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
+	return LoadFromBytes(data)
+}
+
+// LoadFromBytes runs the same schema-validate/decode/defaults/validate
+// pipeline as Load, but against an in-memory YAML document. This lets
+// serverless deployments supply the whole config via an environment variable
+// instead of a mounted file.
+func LoadFromBytes(data []byte) (*Config, error) {
 	if err := validateSchema(data); err != nil {
 		return nil, err
 	}
@@ -136,7 +144,14 @@ func validateSchema(data []byte) error {
 
 func applyDefaults(cfg *Config) {
 	if cfg.Server.Bind == "" {
-		cfg.Server.Bind = ":8080"
+		// Serverless-container platforms (Cloud Run, Fly, Render, Railway,
+		// App Runner) inject the port to listen on via $PORT rather than
+		// letting the operator choose a fixed bind address.
+		if port := os.Getenv("PORT"); port != "" {
+			cfg.Server.Bind = ":" + port
+		} else {
+			cfg.Server.Bind = ":8080"
+		}
 	}
 	if cfg.OIDC.Issuer == "" {
 		cfg.OIDC.Issuer = "https://token.actions.githubusercontent.com"

@@ -59,6 +59,46 @@ func TestLoadValidConfigAppliesDefaults(t *testing.T) {
 	}
 }
 
+func TestPortEnvOverridesDefaultBind(t *testing.T) {
+	t.Setenv("PORT", "9090")
+	cfg, err := config.Load(write(t, validConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Bind != ":9090" {
+		t.Errorf("bind = %q, want :9090", cfg.Server.Bind)
+	}
+}
+
+func TestExplicitBindWinsOverPortEnv(t *testing.T) {
+	t.Setenv("PORT", "9090")
+	body := validConfig + "server:\n  bind: \":7000\"\n"
+	cfg, err := config.Load(write(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server.Bind != ":7000" {
+		t.Errorf("bind = %q, want :7000", cfg.Server.Bind)
+	}
+}
+
+func TestLoadFromBytesParsesValidConfig(t *testing.T) {
+	cfg, err := config.LoadFromBytes([]byte(validConfig))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OIDC.Audience != "gh-token-broker" {
+		t.Errorf("audience = %q", cfg.OIDC.Audience)
+	}
+}
+
+func TestLoadFromBytesRejectsInvalid(t *testing.T) {
+	body := strings.Replace(validConfig, "  audience: gh-token-broker\n", "", 1)
+	if _, err := config.LoadFromBytes([]byte(body)); err == nil {
+		t.Fatal("missing oidc.audience must be rejected")
+	}
+}
+
 func TestRejectUnknownPermissionKeyInGrant(t *testing.T) {
 	body := strings.Replace(validConfig, "          contents: read", "          not_a_permission: read", 1)
 	_, err := config.Load(write(t, body))
