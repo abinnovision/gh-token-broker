@@ -33,9 +33,9 @@ const maxBodyBytes = 1 << 20
 
 // RFC 8693 / RFC 6749 grant, token-type and error identifiers.
 const (
-	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
-	tokenTypeAccessToken   = "urn:ietf:params:oauth:token-type:access_token"
-	tokenTypeIDToken       = "urn:ietf:params:oauth:token-type:id_token"
+	grantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange" //nolint:gosec // G101: RFC 8693 grant-type URN, not a credential
+	tokenTypeAccessToken   = "urn:ietf:params:oauth:token-type:access_token"   //nolint:gosec // G101: RFC 8693 token-type URN, not a credential
+	tokenTypeIDToken       = "urn:ietf:params:oauth:token-type:id_token"       //nolint:gosec // G101: RFC 8693 token-type URN, not a credential
 
 	errInvalidRequest   = "invalid_request"
 	errUnsupportedGrant = "unsupported_grant_type"
