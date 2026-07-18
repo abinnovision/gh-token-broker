@@ -44,8 +44,11 @@ repositories (`request.repositories`). A request is allowed only if the
 combined permissions cover its request. The broker mints exactly that
 requested scope.
 
-`grant.permissions` is required and static. Runtime CEL errors are logged and
-skipped; invalid CEL prevents startup.
+`grant.permissions` is required and static. See
+[`internal/perm/catalog_gen.go`](./internal/perm/catalog_gen.go) for the full
+list of supported permission keys and their allowed levels (generated from the
+GitHub REST API OpenAPI spec). Runtime CEL errors are logged and skipped;
+invalid CEL prevents startup.
 
 CEL receives only these variables:
 
