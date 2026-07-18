@@ -16,36 +16,11 @@ var levels = map[string]int{
 	"admin": 3,
 }
 
-// Canonical is the allow-list of GitHub App permission keys this proxy
-// supports. Any permission key NOT in this table — whether it appears in a
-// request or in a policy/action grant — is dropped (fail closed), never passed
-// through to GitHub. This is a deliberately conservative starter set; extend
-// it as new permissions are needed (and add a config-load test for the new
-// key). Names mirror GitHub's installation-token permission field names.
-var Canonical = map[string]bool{
-	"actions":           true,
-	"administration":         true,
-	"checks":                 true,
-	"contents":               true,
-	"deployments":            true,
-	"environments":           true,
-	"issues":                 true,
-	"metadata":               true,
-	"packages":               true,
-	"pages":                  true,
-	"pull_requests":          true,
-	"repository_hooks":       true,
-	"repository_projects":    true,
-	"secret_scanning_alerts": true,
-	"secrets":                true,
-	"security_events":        true,
-	"statuses":               true,
-	"vulnerability_alerts":   true,
-	"workflows":              true,
+// ValidKey reports whether k is a known GitHub App permission key.
+func ValidKey(k string) bool {
+	_, ok := Catalog[k]
+	return ok
 }
-
-// ValidKey reports whether k is a supported (canonical) permission key.
-func ValidKey(k string) bool { return Canonical[k] }
 
 // ValidLevel reports whether level is a known permission level.
 func ValidLevel(level string) bool {
@@ -69,7 +44,7 @@ func levelName(n int) string {
 func Normalize(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for k, v := range in {
-		if !Canonical[k] {
+		if !ValidKey(k) {
 			continue
 		}
 		if !ValidLevel(v) {
@@ -162,15 +137,12 @@ func Gaps(required, granted map[string]string) map[string]string {
 	return gaps
 }
 
-// ValidKeyLevel reports whether key is a canonical permission key and level is
-// valid for that specific key per the GitHub API catalog.
+// ValidKeyLevel reports whether key is a known GitHub App permission key and
+// level is valid for that specific key per the generated Catalog.
 func ValidKeyLevel(key, level string) bool {
-	if !Canonical[key] {
+	allowed := Catalog[key]
+	if allowed == nil {
 		return false
-	}
-	allowed, ok := Catalog[key]
-	if !ok {
-		return ValidLevel(level)
 	}
 	for _, l := range allowed {
 		if l == level {
