@@ -24,62 +24,132 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
 
-  release:
-    # Tag + release only after the full test matrix is green, and only on
-    # pushes to main (never on pull requests).
-    needs: [test]
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.5.0
+
+  release-please:
+    # Maintain the Release PR and, when it is merged, cut the tag + GitHub
+    # Release. Runs only on pushes to main after the full test matrix is green.
+    #
+    # Authenticates with a short-lived GitHub App token brokered per-run via
+    # oidc-token-cli's token-exchange against a deployed gh-token-broker (this
+    # project dogfooding itself), not the default GITHUB_TOKEN, for two reasons:
+    #   1. release-please needs contents:write + issues:write (PR labels) +
+    #      pull-requests:write; requested explicitly via --scope and minted by
+    #      the broker (subject to its CEL policy authorizing this resource).
+    #   2. PRs opened by GITHUB_TOKEN don't trigger workflows; an App token's do,
+    #      so the Release PR gets the normal test matrix.
+    needs: [test, lint]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # mint the GitHub Actions OIDC subject token for the exchange
+    outputs:
+      versions: ${{ steps.rp.outputs.versions }}
+    steps:
+      - name: Install oidc-token-cli
+        uses: jaxxstorm/action-install-gh-release@v3.0.0
+        with:
+          repo: abinnovision/oidc-token-cli
+          cache: enable
+      - name: Fetch release token from gh-token-broker
+        id: gtb
+        env:
+          GTB_URL: ${{ secrets.GTB_URL }} # OIDC issuer base; exposes /.well-known/openid-configuration
+        run: |
+          set -euo pipefail
+
+          token=$(oidc-token \
+            --issuer "${GTB_URL}" \
+            --client-id gtb-abinnovision \
+            --grant-type token-exchange \
+            --subject-token-source github-actions \
+            --subject-token-type urn:ietf:params:oauth:token-type:id_token \
+            --audience gtb-abinnovision \
+            --resource abinnovision/gh-token-broker \
+            --scope "contents:write issues:write pull_requests:write" \
+            --non-interactive)
+
+          if [ -z "${token}" ]; then
+            echo "gh-token-broker returned no token" >&2
+            exit 1
+          fi
+
+          echo "::add-mask::${token}"
+          echo "token=${token}" >> "$GITHUB_OUTPUT"
+      - uses: abinnovision/actions@run-release-please-v1
+        id: rp
+        with:
+          token: ${{ steps.gtb.outputs.token }}
+
+  goreleaser:
+    # Build + publish only when release-please actually cut a release (i.e. a
+    # Release PR was merged). Runs in the same workflow run rather than via an
+    # `on: release` trigger, because releases created with GITHUB_TOKEN do not
+    # emit workflow-triggering events.
+    needs: release-please
+    if: needs.release-please.outputs.versions != '{}'
     runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
+      id-token: write
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # svu and the GoReleaser changelog need full history + tags
+          fetch-depth: 0 # GoReleaser needs full history + tags for its build metadata
+          ref: "v${{ fromJSON(needs.release-please.outputs.versions)['.'].packageVersion }}"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Compute next version
-        id: svu
-        env:
-          GOTOOLCHAIN: auto # setup-go@v6 defaults to 'local'; svu may need a newer toolchain than go.mod
-        run: |
-          go install github.com/caarlos0/svu/v3@latest
-          current="$(svu current 2>/dev/null || echo v0.0.0)"
-          next="$(svu next)"
-          echo "current=${current} next=${next}"
-          echo "next=${next}" >> "$GITHUB_OUTPUT"
-          if [ "${next}" = "${current}" ]; then
-            echo "release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "release=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Create tag
-        if: steps.svu.outputs.release == 'true'
-        env:
-          NEXT: ${{ steps.svu.outputs.next }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "$NEXT" -m "$NEXT"
-          git push origin "refs/tags/$NEXT"
       # QEMU is not strictly required for a COPY-only Dockerfile, but is
       # harmless belt-and-suspenders for future RUN steps.
       - uses: docker/setup-qemu-action@v4
-        if: steps.svu.outputs.release == 'true'
       - uses: docker/setup-buildx-action@v4
-        if: steps.svu.outputs.release == 'true'
       - uses: docker/login-action@v4
-        if: steps.svu.outputs.release == 'true'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: goreleaser/goreleaser-action@v7
-        if: steps.svu.outputs.release == 'true'
         with:
           version: "~> v2"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  snapshot:
+    # Build the release binaries on every run (push + PR) and attach them to the
+    # workflow run as downloadable artifacts — no tag, no GitHub release, no
+    # image push. Grab them from the run's "Artifacts" section to test a
+    # pre-release build. Uses GoReleaser snapshot mode, so it needs no tag and
+    # publishes nothing.
+    needs: [test, lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # GoReleaser derives the snapshot version from git history
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+      - uses: actions/upload-artifact@v7
+        with:
+          name: gh-token-broker-snapshot
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          retention-days: 14

@@ -48,13 +48,17 @@ checksum:
   name_template: checksums.txt
 
 changelog:
-  sort: asc
-  groups:
-    - title: Features
-      regexp: '^feat'
-      order: 0
-    - title: Fixes
-      regexp: '^fix'
-      order: 1
-    - title: Other
-      order: 999
+  # release-please owns the changelog (CHANGELOG.md + GitHub Release notes).
+  disable: true
+
+release:
+  github:
+    owner: abinnovision
+    name: gh-token-broker
+  # Attach archives + checksums to the Release that release-please already
+  # created for this tag, instead of trying to recreate it.
+  mode: append
+  # release-please cuts the release as a draft (draft + force-tag-creation in
+  # release-please-config.json). use_existing_draft lets GoReleaser adopt that
+  # draft by name, append the archives, and publish it.
+  use_existing_draft: true

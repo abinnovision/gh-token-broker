@@ -83,7 +83,7 @@ type Grant struct {
 // defaults, then enforces semantic invariants (canonical permission keys,
 // key material sourcing).
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is the operator-supplied config file path from the -config flag
 	if err != nil {
 		return nil, fmt.Errorf("read config: %w", err)
 	}
