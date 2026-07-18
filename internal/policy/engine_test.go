@@ -39,10 +39,10 @@ func scope(permissions map[string]string) policy.Scope {
 }
 
 func TestDefaultRejectWhenNoPolicyMatches(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{{
+	e := mustEngine(t, &config.Config{Policies: []config.Policy{{
 		Name: "owner", Condition: `caller.repository_owner == "acme"`,
 		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
-	}}}})
+	}}})
 	d, err := e.Evaluate(input(caller("acme/app", "someone-else"), "acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
 		t.Fatal(err)
@@ -59,12 +59,12 @@ func TestMatchingPoliciesCombinePermissionsRegardlessOfOrder(t *testing.T) {
 	}
 	required := scope(map[string]string{"contents": "write"})
 
-	forward, err := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: policies}}).
+	forward, err := mustEngine(t, &config.Config{Policies: policies}).
 		Evaluate(input(caller("acme/app", "acme"), "acme/app"), required)
 	if err != nil {
 		t.Fatal(err)
 	}
-	backward, err := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{policies[1], policies[0]}}}).
+	backward, err := mustEngine(t, &config.Config{Policies: []config.Policy{policies[1], policies[0]}}).
 		Evaluate(input(caller("acme/app", "acme"), "acme/app"), required)
 	if err != nil {
 		t.Fatal(err)
@@ -78,10 +78,10 @@ func TestMatchingPoliciesCombinePermissionsRegardlessOfOrder(t *testing.T) {
 }
 
 func TestCombinedPoliciesMustFullyCoverPermissions(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{{
+	e := mustEngine(t, &config.Config{Policies: []config.Policy{{
 		Name: "contents-read", Condition: "true",
 		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
-	}}}})
+	}}})
 	for _, required := range []policy.Scope{
 		scope(map[string]string{"contents": "write"}),
 		scope(map[string]string{"issues": "read"}),
@@ -97,11 +97,11 @@ func TestCombinedPoliciesMustFullyCoverPermissions(t *testing.T) {
 }
 
 func TestConditionMustAuthorizeRequestedRepositories(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{{
+	e := mustEngine(t, &config.Config{Policies: []config.Policy{{
 		Name:      "own-repository",
 		Condition: `request.repositories.all(r, r == caller.repository)`,
 		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
-	}}}})
+	}}})
 	for _, repositories := range [][]string{{"acme/app"}, {"acme/other"}} {
 		d, err := e.Evaluate(input(caller("acme/app", "acme"), repositories...), scope(map[string]string{"contents": "read"}))
 		if err != nil {
@@ -114,10 +114,10 @@ func TestConditionMustAuthorizeRequestedRepositories(t *testing.T) {
 }
 
 func TestRuntimeEvaluationErrorIsSkipped(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{
+	e := mustEngine(t, &config.Config{Policies: []config.Policy{
 		{Name: "broken-at-runtime", Condition: "1 / 0 == 0", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
 		{Name: "allow", Condition: "true", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
-	}}})
+	}})
 	d, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
 		t.Fatal(err)
@@ -136,10 +136,10 @@ func TestUnknownCELFieldsFailPolicyCompilation(t *testing.T) {
 		`action.owner == "acme"`,
 		`caller_advisory.actor == "x"`,
 	} {
-		_, err := policy.New(&config.Config{Policy: config.PolicyConfig{
-			CostLimit: 10000, MaxRepositories: 256,
+		_, err := policy.New(&config.Config{
+			Policy:   config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256},
 			Policies: []config.Policy{{Name: "invalid", Condition: condition}},
-		}}, discard())
+		}, discard())
 		if err == nil {
 			t.Fatalf("condition %q must fail compilation", condition)
 		}
@@ -147,14 +147,14 @@ func TestUnknownCELFieldsFailPolicyCompilation(t *testing.T) {
 }
 
 func TestCostLimitTripsAndIsSkipped(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{
-		CostLimit: 10,
+	e := mustEngine(t, &config.Config{
+		Policy: config.PolicyConfig{CostLimit: 10},
 		Policies: []config.Policy{{
 			Name:      "expensive",
 			Condition: `[1,2,3,4,5,6,7,8,9,10].all(x, [1,2,3,4,5,6,7,8,9,10].all(y, x + y > 0))`,
 			Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 		}},
-	}})
+	})
 	d, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
 		t.Fatal(err)
@@ -165,13 +165,13 @@ func TestCostLimitTripsAndIsSkipped(t *testing.T) {
 }
 
 func TestOversizedRepositoriesRejectedBeforeEvaluation(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{
-		MaxRepositories: 2,
+	e := mustEngine(t, &config.Config{
+		Policy: config.PolicyConfig{MaxRepositories: 2},
 		Policies: []config.Policy{{
 			Name: "any", Condition: "true",
 			Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 		}},
-	}})
+	})
 	_, err := e.Evaluate(input(caller("acme/app", "acme"), "a/1", "a/2", "a/3"), scope(map[string]string{"contents": "read"}))
 	if err == nil {
 		t.Fatal("oversized repositories list must be rejected, not truncated")
@@ -179,10 +179,10 @@ func TestOversizedRepositoriesRejectedBeforeEvaluation(t *testing.T) {
 }
 
 func TestCompileErrorNamesPolicy(t *testing.T) {
-	_, err := policy.New(&config.Config{Policy: config.PolicyConfig{
-		CostLimit: 10000, MaxRepositories: 256,
+	_, err := policy.New(&config.Config{
+		Policy:   config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256},
 		Policies: []config.Policy{{Name: "broken", Condition: "this is not CEL (("}},
-	}}, discard())
+	}, discard())
 	if err == nil {
 		t.Fatal("expected compile error")
 	}

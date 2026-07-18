@@ -17,15 +17,16 @@ import (
 
 // Config is the top-level proxy configuration.
 type Config struct {
-	Server        ServerConfig        `yaml:"server"`
-	OIDC          OIDCConfig          `yaml:"oidc"`
-	GitHubApp     GitHubAppConfig     `yaml:"githubApp"`
-	TokenIssuance TokenIssuanceConfig `yaml:"tokenIssuance"`
-	Policy        PolicyConfig        `yaml:"policy"`
+	Server    ServerConfig    `yaml:"server"`
+	OIDC      OIDCConfig      `yaml:"oidc"`
+	GitHubApp GitHubAppConfig `yaml:"githubApp"`
+	Policy    PolicyConfig    `yaml:"policy"`
+	Policies  []Policy        `yaml:"policies"`
 }
 
 type ServerConfig struct {
-	Bind string `yaml:"bind"`
+	Bind   string `yaml:"bind"`
+	Issuer string `yaml:"issuer"`
 }
 
 type OIDCConfig struct {
@@ -43,23 +44,9 @@ type GitHubAppConfig struct {
 	PrivateKeyEnv  string `yaml:"privateKeyEnv"`
 }
 
-// TokenIssuanceConfig configures the RFC 8693 token-exchange endpoint.
-type TokenIssuanceConfig struct {
-	// Issuer is the broker's own OAuth issuer identifier — a stable, absolute
-	// HTTPS URL (e.g. "https://gh-token-broker.example.com") used verbatim as
-	// the "issuer" value in RFC 8414 metadata and as the base for
-	// token_endpoint. Required.
-	Issuer string `yaml:"issuer"`
-}
-
 type PolicyConfig struct {
-	// CostLimit bounds CEL runtime cost per evaluation, guarding against
-	// pathological operator expressions.
-	CostLimit uint64 `yaml:"costLimit"`
-	// MaxRepositories caps the size of a caller-supplied request.repositories
-	// list before it is bound as a CEL activation variable.
-	MaxRepositories int      `yaml:"maxRepositories"`
-	Policies        []Policy `yaml:"policies"`
+	CostLimit       uint64 `yaml:"costLimit"`
+	MaxRepositories int    `yaml:"maxRepositories"`
 }
 
 // Policy is one independent allow policy. Only Condition is a CEL expression;
@@ -141,9 +128,6 @@ func validateSchema(data []byte) error {
 
 func applyDefaults(cfg *Config) {
 	if cfg.Server.Bind == "" {
-		// Serverless-container platforms (Cloud Run, Fly, Render, Railway,
-		// App Runner) inject the port to listen on via $PORT rather than
-		// letting the operator choose a fixed bind address.
 		if port := os.Getenv("PORT"); port != "" {
 			cfg.Server.Bind = ":" + port
 		} else {
@@ -178,16 +162,16 @@ func validate(cfg *Config) error {
 	if cfg.GitHubApp.PrivateKeyPath != "" && cfg.GitHubApp.PrivateKeyEnv != "" {
 		return fmt.Errorf("githubApp: set only one of privateKeyPath or privateKeyEnv")
 	}
-	if cfg.TokenIssuance.Issuer == "" {
-		return fmt.Errorf("tokenIssuance.issuer is required")
+	if cfg.Server.Issuer == "" {
+		return fmt.Errorf("server.issuer is required")
 	}
-	u, err := url.Parse(cfg.TokenIssuance.Issuer)
+	u, err := url.Parse(cfg.Server.Issuer)
 	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return fmt.Errorf("tokenIssuance.issuer must be an absolute https:// URL")
+		return fmt.Errorf("server.issuer must be an absolute https:// URL")
 	}
 
 	seen := map[string]bool{}
-	for _, p := range cfg.Policy.Policies {
+	for _, p := range cfg.Policies {
 		if seen[p.Name] {
 			return fmt.Errorf("duplicate policy name %q", p.Name)
 		}
@@ -216,9 +200,9 @@ func checkPermissions(where string, perms map[string]string) error {
 // AggregateGrantPermissions merges the grant permissions across all policies,
 // keeping the highest level (read < write < admin) for each canonical key.
 // Non-canonical keys or invalid levels are dropped (fail-closed).
-func (pc PolicyConfig) AggregateGrantPermissions() map[string]string {
+func (c *Config) AggregateGrantPermissions() map[string]string {
 	agg := map[string]string{}
-	for _, p := range pc.Policies {
+	for _, p := range c.Policies {
 		for k, v := range p.Grant.Permissions {
 			if !perm.ValidKey(k) || !perm.ValidLevel(v) {
 				continue
@@ -235,9 +219,9 @@ func (pc PolicyConfig) AggregateGrantPermissions() map[string]string {
 // Lint returns non-fatal configuration warnings.
 func (c *Config) Lint() []string {
 	var warnings []string
-	if len(c.Policy.Policies) == 0 {
+	if len(c.Policies) == 0 {
 		warnings = append(warnings,
-			"policy.policies is empty: every request will be denied (deny-by-default)")
+			"policies is empty: every request will be denied (deny-by-default)")
 	}
 	return warnings
 }

@@ -10,7 +10,11 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "bind": { "type": "string", "default": ":8080" }
+        "bind": { "type": "string", "default": ":8080" },
+        "issuer": {
+          "type": "string",
+          "description": "The broker's own OAuth issuer identifier — a stable, absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint."
+        }
       }
     },
     "oidc": {
@@ -48,28 +52,17 @@
         }
       }
     },
-    "tokenIssuance": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["issuer"],
-      "properties": {
-        "issuer": {
-          "type": "string",
-          "description": "The broker's own OAuth issuer identifier — a stable, absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint."
-        }
-      }
-    },
     "policy": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
         "costLimit": { "type": "integer", "minimum": 1, "default": 10000 },
-        "maxRepositories": { "type": "integer", "minimum": 1, "default": 256 },
-        "policies": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/policy" }
-        }
+        "maxRepositories": { "type": "integer", "minimum": 1, "default": 256 }
       }
+    },
+    "policies": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/policy" }
     }
   },
   "$defs": {

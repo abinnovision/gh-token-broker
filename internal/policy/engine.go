@@ -85,7 +85,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Engine, error) {
 		maxRepositories: cfg.Policy.MaxRepositories,
 		logger:          logger,
 	}
-	for _, p := range cfg.Policy.Policies {
+	for _, p := range cfg.Policies {
 		prg, err := compile(env, p.Name, p.Condition, cfg.Policy.CostLimit)
 		if err != nil {
 			return nil, err
