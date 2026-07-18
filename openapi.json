@@ -12,39 +12,10 @@
     { "oidcBearer": [] }
   ],
   "paths": {
-    "/actions/workflow-dispatch": {
-      "post": {
-        "summary": "Dispatch a workflow",
-        "description": "Mints a token scoped to `actions: write` on the target repository and dispatches the workflow server-side. The token never leaves the server.",
-        "operationId": "workflowDispatch",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/DispatchRequest" }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Workflow dispatched",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/DispatchResponse" }
-              }
-            }
-          },
-          "400": { "description": "Malformed request, missing fields, or a disallowed field present", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "401": { "description": "Missing or invalid bearer token", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "403": { "description": "No matching policy condition, or combined permissions do not cover the action requirements", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "502": { "description": "Upstream GitHub API error", "content": { "text/plain": { "schema": { "type": "string" } } } }
-        }
-      }
-    },
     "/token": {
       "post": {
         "summary": "RFC 8693 OAuth 2.0 Token Exchange",
-        "description": "Exchanges a GitHub Actions OIDC ID token (`subject_token`) for a scoped GitHub App installation token. Only registered when `tokenIssuance.enabled` is true. Only `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` is supported; any other grant_type is rejected with `unsupported_grant_type`. Caller identity is verified from `subject_token`, not the `Authorization` header.",
+        "description": "Exchanges a GitHub Actions OIDC ID token (`subject_token`) for a scoped GitHub App installation token. Only `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` is supported; any other grant_type is rejected with `unsupported_grant_type`. Caller identity is verified from `subject_token`, not the `Authorization` header.",
         "operationId": "tokenExchange",
         "security": [],
         "requestBody": {
@@ -72,35 +43,6 @@
             "description": "server_error: upstream GitHub API error",
             "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OAuthError" } } }
           }
-        }
-      }
-    },
-    "/actions/exchange": {
-      "post": {
-        "summary": "Issue a scoped token (header-authenticated)",
-        "description": "GitHub-Actions-native alternative to the RFC 8693 /token endpoint: returns a scoped GitHub App installation token to the caller using `Authorization: Bearer <OIDC token>` and a plain JSON contract, with no OAuth ceremony. Only registered when `tokenIssuance.enabled` is true. Goes through the same policy evaluation and token-minting chokepoint as /token; CEL policies cannot distinguish which of the two endpoints was used.",
-        "operationId": "actionsExchange",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": { "$ref": "#/components/schemas/ActionsExchangeRequest" }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Token issued",
-            "content": {
-              "application/json": {
-                "schema": { "$ref": "#/components/schemas/ActionsExchangeResponse" }
-              }
-            }
-          },
-          "400": { "description": "Malformed request, empty repositories/permissions, or repositories span multiple owners", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "401": { "description": "Missing or invalid bearer token", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "403": { "description": "No matching policy condition, or combined permissions do not cover the request", "content": { "text/plain": { "schema": { "type": "string" } } } },
-          "502": { "description": "Upstream GitHub API error", "content": { "text/plain": { "schema": { "type": "string" } } } }
         }
       }
     },
@@ -157,62 +99,6 @@
       }
     },
     "schemas": {
-      "DispatchRequest": {
-        "type": "object",
-        "required": ["owner", "repo", "ref", "workflow"],
-        "properties": {
-          "owner": { "type": "string" },
-          "repo": { "type": "string" },
-          "ref": { "type": "string" },
-          "workflow": { "type": "string" },
-          "inputs": { "type": "object", "additionalProperties": true }
-        },
-        "additionalProperties": false
-      },
-      "DispatchResponse": {
-        "type": "object",
-        "properties": {
-          "status": { "type": "string", "example": "dispatched" },
-          "repository": { "type": "string", "example": "acme/app" },
-          "workflow": { "type": "string" },
-          "ref": { "type": "string" },
-          "permissions": {
-            "type": "object",
-            "additionalProperties": { "type": "string" }
-          }
-        }
-      },
-      "ActionsExchangeRequest": {
-        "type": "object",
-        "required": ["repositories", "permissions"],
-        "properties": {
-          "repositories": {
-            "type": "array",
-            "items": { "type": "string" },
-            "example": ["acme/app"]
-          },
-          "permissions": {
-            "type": "object",
-            "additionalProperties": { "type": "string", "enum": ["read", "write", "admin"] },
-            "example": { "contents": "read" }
-          }
-        }
-      },
-      "ActionsExchangeResponse": {
-        "type": "object",
-        "properties": {
-          "token": { "type": "string" },
-          "expires_at": { "type": "string", "format": "date-time" },
-          "permissions": {
-            "type": "object",
-            "additionalProperties": { "type": "string" }
-          },
-          "repositories": {
-            "type": "array",
-            "items": { "type": "string" }
-          }
-        }
-      },
       "TokenExchangeRequest": {
         "type": "object",
         "required": ["grant_type", "subject_token", "subject_token_type", "resource"],

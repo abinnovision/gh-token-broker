@@ -51,11 +51,11 @@
     "tokenIssuance": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["issuer"],
       "properties": {
-        "enabled": { "type": "boolean", "default": false },
         "issuer": {
           "type": "string",
-          "description": "The broker's own OAuth issuer identifier — a stable, absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint. Required when enabled is true."
+          "description": "The broker's own OAuth issuer identifier — a stable, absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint."
         }
       }
     },

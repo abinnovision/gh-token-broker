@@ -113,31 +113,6 @@ func TestConditionMustAuthorizeRequestedRepositories(t *testing.T) {
 	}
 }
 
-func TestWorkflowDispatchPresenceIsOptionalAndSafe(t *testing.T) {
-	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{{
-		Name: "dispatch-app", Condition: `request.?workflow_dispatch.hasValue() && request.workflow_dispatch.owner == "acme" && request.workflow_dispatch.repo == "app"`,
-		Grant: config.Grant{Permissions: map[string]string{"actions": "write"}},
-	}}}})
-
-	tokenDecision, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), scope(map[string]string{"actions": "write"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if tokenDecision.Allowed || len(tokenDecision.SkippedPolicies) != 0 {
-		t.Fatalf("token request must cleanly not match dispatch policy: %+v", tokenDecision)
-	}
-
-	dispatch := input(caller("acme/app", "acme"), "acme/app")
-	dispatch.Request.WorkflowDispatch = &policy.WorkflowDispatch{Owner: "acme", Repo: "app", Ref: "main", Workflow: "ci.yml"}
-	dispatchDecision, err := e.Evaluate(dispatch, scope(map[string]string{"actions": "write"}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !dispatchDecision.Allowed {
-		t.Fatalf("dispatch request must match dispatch policy: %+v", dispatchDecision)
-	}
-}
-
 func TestRuntimeEvaluationErrorIsSkipped(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policy: config.PolicyConfig{Policies: []config.Policy{
 		{Name: "broken-at-runtime", Condition: "1 / 0 == 0", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
@@ -158,7 +133,6 @@ func TestUnknownCELFieldsFailPolicyCompilation(t *testing.T) {
 		`caller.not_a_claim == "x"`,
 		`request.not_a_field == "x"`,
 		`request.permissions.contents == "read"`,
-		`request.workflow_dispatch.not_a_field == "x"`,
 		`action.owner == "acme"`,
 		`caller_advisory.actor == "x"`,
 	} {

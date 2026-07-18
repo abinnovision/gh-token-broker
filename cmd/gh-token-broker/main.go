@@ -1,7 +1,6 @@
 // Command gh-token-broker authenticates GitHub Actions OIDC callers,
 // evaluates operator-authored CEL policy, and mints least-privilege GitHub App
-// installation tokens — either by dispatching a workflow itself or by
-// returning a scoped token to the caller.
+// installation tokens for the caller.
 package main
 
 import (
@@ -13,7 +12,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/abinnovision/gh-token-broker/internal/actions"
 	"github.com/abinnovision/gh-token-broker/internal/audit"
 	"github.com/abinnovision/gh-token-broker/internal/auth"
 	"github.com/abinnovision/gh-token-broker/internal/config"
@@ -77,8 +75,8 @@ func run(logger *slog.Logger, configPath string) error {
 	}
 
 	auditLog := audit.New(logger)
-	srv := server.New(authn, engine, ghClient, actions.GitHubDispatcher{},
-		auditLog, logger, cfg.TokenIssuance.Enabled, cfg.TokenIssuance.Issuer)
+	srv := server.New(authn, engine, ghClient,
+		auditLog, logger, cfg.TokenIssuance.Issuer)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Bind,
@@ -102,8 +100,7 @@ func run(logger *slog.Logger, configPath string) error {
 	logger.Info("listening",
 		"bind", cfg.Server.Bind,
 		"version", version,
-		"policies", len(cfg.Policy.Policies),
-		"token_issuance_enabled", cfg.TokenIssuance.Enabled)
+		"policies", len(cfg.Policy.Policies))
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}

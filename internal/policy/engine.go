@@ -34,22 +34,9 @@ type Caller struct {
 	JobWorkflowRef    string `cel:"job_workflow_ref"`
 }
 
-// Request is the normalized request context exposed to CEL. Repositories are
-// always populated: caller-supplied for token issuance and derived from the
-// dispatch target for workflow dispatch.
+// Request is the normalized request context exposed to CEL.
 type Request struct {
-	Repositories     []string          `cel:"repositories"`
-	WorkflowDispatch *WorkflowDispatch `cel:"workflow_dispatch"`
-}
-
-// WorkflowDispatch is the additive workflow-dispatch context. It is present
-// only when Request.WorkflowDispatch is non-nil; arbitrary workflow inputs
-// remain outside CEL policy evaluation.
-type WorkflowDispatch struct {
-	Owner    string `cel:"owner"`
-	Repo     string `cel:"repo"`
-	Ref      string `cel:"ref"`
-	Workflow string `cel:"workflow"`
+	Repositories []string `cel:"repositories"`
 }
 
 // Decision is the outcome of evaluating one request against every policy.

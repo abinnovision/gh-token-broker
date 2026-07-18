@@ -1,5 +1,5 @@
-// Package audit emits structured audit events for every token issuance and
-// every action execution, both allow and deny, as JSON via slog.
+// Package audit emits structured audit events for every token issuance,
+// both allow and deny, as JSON via slog.
 package audit
 
 import "log/slog"
@@ -15,7 +15,7 @@ const (
 // Event is one audit record. Only id-anchored caller claims are recorded;
 // advisory claims and (obviously) any secret material are never logged.
 type Event struct {
-	// Operation is "token" or "workflow-dispatch".
+	// Operation is "token".
 	Operation string
 	Decision  Decision
 	// Caller carries the id-anchored OIDC claims (repository, repository_owner,

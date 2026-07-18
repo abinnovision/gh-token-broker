@@ -26,8 +26,7 @@ const (
 // available.
 //
 // caller and request are native Go structs, so unknown field references fail
-// policy compilation at startup. request.workflow_dispatch is an optional
-// additive field that is populated only for workflow-dispatch requests.
+// policy compilation at startup.
 func NewEnv() (*cel.Env, error) {
 	return cel.NewEnv(
 		cel.OptionalTypes(),
@@ -36,7 +35,6 @@ func NewEnv() (*cel.Env, error) {
 		ext.NativeTypes(
 			reflect.TypeOf(Caller{}),
 			reflect.TypeOf(Request{}),
-			reflect.TypeOf(WorkflowDispatch{}),
 			ext.ParseStructTags(true),
 		),
 	)

@@ -1,19 +1,22 @@
 # gh-token-broker
 
-A GitHub Actions OIDC token broker for GitHub Apps. It authorizes callers with
-CEL policies, then mints a scoped installation token or dispatches a workflow
-without returning the token.
+A GitHub Actions OIDC token broker for GitHub Apps. It authenticates callers
+via GitHub Actions OIDC tokens, evaluates operator-authored CEL policies, and
+mints least-privilege GitHub App installation tokens using RFC 8693 OAuth 2.0
+Token Exchange.
 
 ## Endpoints
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /actions/workflow-dispatch` | Dispatch a workflow with an internal scoped token. |
-| `POST /token` | Return a scoped installation token; enabled by `tokenIssuance.enabled`. |
+| `POST /token` | RFC 8693 token exchange — returns a scoped installation token. |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 authorization server metadata. |
+| `GET /.well-known/openid-configuration` | OIDC Discovery metadata (same document). |
 | `GET /healthz` | Liveness probe. |
 | `GET /openapi.json` | OpenAPI document. |
 
-Authenticated endpoints require `Authorization: Bearer <oidc-token>`.
+The `/token` endpoint authenticates callers via the `subject_token` form field
+(an OIDC ID token from GitHub Actions), not the `Authorization` header.
 
 ## Configuration
 
@@ -26,7 +29,7 @@ githubApp:
   appId: 123456
   privateKeyPath: "/etc/gh-token-broker/app.pem"
 tokenIssuance:
-  enabled: false
+  issuer: "https://gh-token-broker.example.com"
 policy:
   policies:
     - name: acme-ci
@@ -42,10 +45,9 @@ Use exactly one of `githubApp.privateKeyPath` and `githubApp.privateKeyEnv`.
 Policies are unordered, additive allow statements. Every `condition` is
 evaluated; matching permission grants use the highest level per key
 (`read < write < admin`). Each condition must authorize the requested
-repositories (`request.repositories`). Workflow dispatch adds
-`request.workflow_dispatch`; its presence and fields can further constrain a
-policy. A request is allowed only if the combined permissions cover its
-request. The broker mints exactly that requested scope.
+repositories (`request.repositories`). A request is allowed only if the
+combined permissions cover its request. The broker mints exactly that
+requested scope.
 
 `grant.permissions` is required and static. Runtime CEL errors are logged and
 skipped; invalid CEL prevents startup.
@@ -55,11 +57,15 @@ CEL receives only these variables:
 | Variable | Contents |
 | --- | --- |
 | `caller` | Typed verified claims: repository, IDs, owner, and workflow ref. |
-| `request` | Typed repositories and optional `workflow_dispatch` target fields. |
-
-Workflow dispatch always requires `actions: write`.
+| `request` | Typed repositories list. |
 
 ## Condition examples
+
+Allow a caller to request a token only for its own repository:
+
+```cel
+caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")
+```
 
 Allow a caller to request a token only for its `-gitops` sibling repository:
 
@@ -67,18 +73,7 @@ Allow a caller to request a token only for its `-gitops` sibling repository:
 request.repositories.all(r, r == caller.repository + "-gitops")
 ```
 
-Allow workflow dispatch only to `acme/app`. The optional-presence check makes
-this a clean non-match for token requests:
-
-```cel
-request.?workflow_dispatch.hasValue() &&
-caller.repository == "acme/app" &&
-request.workflow_dispatch.owner == "acme" &&
-request.workflow_dispatch.repo == "app"
-```
-
-Unknown `caller`, `request`, or `workflow_dispatch` fields fail policy
-compilation at startup.
+Unknown `caller` or `request` fields fail policy compilation at startup.
 
 ## Run
 
@@ -91,38 +86,18 @@ go build ./cmd/gh-token-broker
 go test ./...
 ```
 
-## GitHub Actions examples
+## GitHub Actions usage
 
 Each job needs `permissions: { id-token: write }`. The `audience` value must
 match `oidc.audience` in the broker configuration.
 
-### Dispatch a workflow
-
-```yaml
-jobs:
-  dispatch-workflow:
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-    steps:
-      - run: |
-          ID_TOKEN_RESPONSE=$(curl -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=gh-token-broker")
-          ID_TOKEN=$(echo "$ID_TOKEN_RESPONSE" | jq -r '.value')
-
-          curl --header "Content-Type: application/json" \
-            --request POST \
-            --header "Authorization: Bearer $ID_TOKEN" \
-            --data '{"owner":"acme","repo":"app","ref":"main","workflow":"deploy.yml","inputs":{}}' \
-            https://<broker-host>/actions/workflow-dispatch
-```
-
 ### Request a scoped token
 
-`POST /token` must be enabled with `tokenIssuance.enabled: true`. It's an RFC
-8693 OAuth 2.0 Token Exchange endpoint, so the easiest way to call it from a
-workflow is [`oidc-token-cli`](https://github.com/abinnovision/oidc-token-cli),
-which fetches the GitHub Actions OIDC token and performs the exchange in one
-step. Install it with `brew install abinnovision/tap/oidc-token`.
+`POST /token` is an RFC 8693 OAuth 2.0 Token Exchange endpoint. The easiest
+way to call it from a workflow is
+[`oidc-token-cli`](https://github.com/abinnovision/oidc-token-cli), which
+fetches the GitHub Actions OIDC token and performs the exchange in one step.
+Install it with `brew install abinnovision/tap/oidc-token`.
 
 ```yaml
 jobs:

@@ -23,13 +23,11 @@ githubApp:
   privateKeyPath: "/etc/gh-token-broker/app.pem"
   # privateKeyEnv: "GITHUB_APP_PRIVATE_KEY"
 
-# RFC 8693 OAuth 2.0 Token Exchange. When false, /token and
-# /.well-known/oauth-authorization-server are not registered at all (see README).
+# RFC 8693 OAuth 2.0 Token Exchange endpoint configuration.
 tokenIssuance:
-  enabled: false
   # Stable, publicly resolvable HTTPS URL matching how this service is
   # externally reachable. Used verbatim as the OAuth "issuer" value and in
-  # RFC 8414 metadata. Required when enabled is true.
+  # RFC 8414 metadata. Required.
   issuer: "https://gh-token-broker.example.com"
 
 policy:
@@ -41,11 +39,10 @@ policy:
   policies:
     # ANCHORED matching only: use == or `in [...]` against id-anchored caller
     # claims. Never use substring/prefix matching (no such helpers are exposed).
-    - name: acme-ci-can-dispatch
-      condition: 'request.?workflow_dispatch.hasValue() && caller.repository_owner == "acme" && caller.repository == "acme/app" && request.workflow_dispatch.owner == "acme" && request.workflow_dispatch.repo == "app"'
+    - name: acme-ci
+      condition: 'caller.repository_owner == "acme" && caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")'
       grant:
         permissions:
-          actions: write
           contents: read
     # Conditions authorize requested repositories directly, which supports
     # dynamic targets without enumerating them in configuration:

@@ -25,6 +25,8 @@ oidc:
 githubApp:
   appId: 12345
   privateKeyPath: /etc/gh-token-broker/app.pem
+tokenIssuance:
+  issuer: "https://broker.example.com"
 policy:
   policies:
     - name: allow-acme
@@ -53,9 +55,6 @@ func TestLoadValidConfigAppliesDefaults(t *testing.T) {
 	}
 	if len(cfg.Policy.Policies) != 1 || cfg.Policy.Policies[0].Name != "allow-acme" {
 		t.Errorf("policies = %+v, want allow-acme", cfg.Policy.Policies)
-	}
-	if cfg.TokenIssuance.Enabled {
-		t.Error("tokenIssuance.enabled must default to false")
 	}
 }
 
@@ -141,34 +140,27 @@ func TestRejectDuplicatePolicyName(t *testing.T) {
 	}
 }
 
-func TestTokenIssuanceEnabledRequiresIssuer(t *testing.T) {
-	body := validConfig + "tokenIssuance:\n  enabled: true\n"
+func TestTokenIssuanceRequiresIssuer(t *testing.T) {
+	body := strings.Replace(validConfig, "tokenIssuance:\n  issuer: \"https://broker.example.com\"\n", "", 1)
 	if _, err := config.Load(write(t, body)); err == nil {
-		t.Fatal("tokenIssuance.enabled=true without issuer must be rejected")
+		t.Fatal("missing tokenIssuance.issuer must be rejected")
 	}
 }
 
-func TestTokenIssuanceEnabledRejectsNonHTTPSIssuer(t *testing.T) {
-	body := validConfig + "tokenIssuance:\n  enabled: true\n  issuer: \"http://broker.example.com\"\n"
+func TestTokenIssuanceRejectsNonHTTPSIssuer(t *testing.T) {
+	body := strings.Replace(validConfig, "https://broker.example.com", "http://broker.example.com", 1)
 	if _, err := config.Load(write(t, body)); err == nil {
 		t.Fatal("non-https tokenIssuance.issuer must be rejected")
 	}
 }
 
-func TestTokenIssuanceEnabledAcceptsValidIssuer(t *testing.T) {
-	body := validConfig + "tokenIssuance:\n  enabled: true\n  issuer: \"https://broker.example.com\"\n"
-	cfg, err := config.Load(write(t, body))
+func TestTokenIssuanceAcceptsValidIssuer(t *testing.T) {
+	cfg, err := config.Load(write(t, validConfig))
 	if err != nil {
 		t.Fatalf("valid tokenIssuance config must be accepted: %v", err)
 	}
 	if cfg.TokenIssuance.Issuer != "https://broker.example.com" {
 		t.Errorf("issuer = %q", cfg.TokenIssuance.Issuer)
-	}
-}
-
-func TestTokenIssuanceDisabledDoesNotRequireIssuer(t *testing.T) {
-	if _, err := config.Load(write(t, validConfig)); err != nil {
-		t.Fatalf("tokenIssuance.enabled=false must not require an issuer: %v", err)
 	}
 }
 
