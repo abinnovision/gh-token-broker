@@ -1,41 +1,36 @@
 # gh-token-broker
 
-A GitHub Actions OIDC token broker for GitHub Apps. It authenticates callers
-via GitHub Actions OIDC tokens, evaluates operator-authored CEL policies, and
-mints least-privilege GitHub App installation tokens using RFC 8693 OAuth 2.0
-Token Exchange.
+Mints least-privilege GitHub App installation tokens for GitHub Actions workflows, gated by CEL policies.
 
-## Endpoints
+## How it works
 
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /token` | RFC 8693 token exchange — returns a scoped installation token. |
-| `GET /.well-known/oauth-authorization-server` | RFC 8414 authorization server metadata. |
-| `GET /.well-known/openid-configuration` | OIDC Discovery metadata (same document). |
-| `GET /healthz` | Liveness probe. |
-| `GET /openapi.json` | OpenAPI document. |
-
-The `/token` endpoint authenticates callers via the `subject_token` form field
-(an OIDC ID token from GitHub Actions), not the `Authorization` header.
+1. A GitHub Actions workflow sends its OIDC ID token to the broker.
+2. The broker verifies the token against GitHub's OIDC provider.
+3. CEL policies determine whether the caller is authorized and which permissions to grant.
+4. If authorized, the broker mints a scoped GitHub App installation token and returns it.
 
 ## Configuration
 
 Start with [`config.example.yaml`](./config.example.yaml).
 
 ```yaml
+server:
+  bind: ":8080"
+  issuer: "https://gh-token-broker.example.com"
+
 oidc:
-  audience: "gh-token-broker" # required and proxy-specific
+  audience: "gh-token-broker"
+
 githubApp:
   appId: 123456
   privateKeyPath: "/etc/gh-token-broker/app.pem"
-tokenIssuance:
-  issuer: "https://gh-token-broker.example.com"
-policy:
-  policies:
-    - name: acme-ci
-      condition: 'caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")'
-      grant:
-        permissions: { contents: read }
+
+policies:
+  - name: acme-ci
+    condition: 'caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")'
+    grant:
+      permissions:
+        contents: read
 ```
 
 Use exactly one of `githubApp.privateKeyPath` and `githubApp.privateKeyEnv`.
@@ -59,7 +54,7 @@ CEL receives only these variables:
 | `caller` | Typed verified claims: repository, IDs, owner, and workflow ref. |
 | `request` | Typed repositories list. |
 
-## Condition examples
+### Condition examples
 
 Allow a caller to request a token only for its own repository:
 
@@ -93,8 +88,7 @@ match `oidc.audience` in the broker configuration.
 
 ### Request a scoped token
 
-`POST /token` is an RFC 8693 OAuth 2.0 Token Exchange endpoint. The easiest
-way to call it from a workflow is
+The easiest way to call the broker from a workflow is
 [`oidc-token-cli`](https://github.com/abinnovision/oidc-token-cli), which
 fetches the GitHub Actions OIDC token and performs the exchange in one step.
 Install it with `brew install abinnovision/tap/oidc-token`.
@@ -123,3 +117,13 @@ does not validate against `--resource`). `--client-id` is unchecked by the
 broker (`token_endpoint_auth_methods_supported` is `"none"`), so any
 placeholder works. `--resource` is repeatable for multiple repositories, and
 they must share one owner.
+
+## API
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /token` | Token exchange -- accepts `subject_token` form field (OIDC ID token), returns a scoped installation token. |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 authorization server metadata. |
+| `GET /.well-known/openid-configuration` | OIDC Discovery metadata (same document). |
+| `GET /healthz` | Liveness probe. |
+| `GET /openapi.json` | OpenAPI document. |
