@@ -152,7 +152,7 @@ func TestOpenAPISpecServed(t *testing.T) {
 	}
 }
 
-func TestMetadataRouteWhenEnabled(t *testing.T) {
+func TestMetadataRoute(t *testing.T) {
 	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-authorization-server", nil)
@@ -192,7 +192,7 @@ func TestOpenIDConfigurationAliasesMetadata(t *testing.T) {
 	}
 }
 
-func TestTokenIssuedWhenEnabled(t *testing.T) {
+func TestTokenIssued(t *testing.T) {
 	h := newHarness(t, []config.Policy{allowTokenPolicy()})
 	rec := doToken(h.server.Handler(), baseTokenForm())
 	if rec.Code != http.StatusOK {

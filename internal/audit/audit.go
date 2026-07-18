@@ -1,5 +1,5 @@
-// Package audit emits structured audit events for every token issuance and
-// every action execution, both allow and deny, as JSON via slog.
+// Package audit emits structured audit events for every token issuance,
+// both allow and deny, as JSON via slog.
 package audit
 
 import "log/slog"
