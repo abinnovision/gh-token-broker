@@ -204,3 +204,41 @@ func TestGaps(t *testing.T) {
 		})
 	}
 }
+
+func TestCatalogIsNotEmpty(t *testing.T) {
+	if len(perm.Catalog) < 40 {
+		t.Fatalf("Catalog has %d entries, expected at least 40", len(perm.Catalog))
+	}
+}
+
+func TestValidKeyLevel(t *testing.T) {
+	tests := []struct {
+		key, level string
+		want       bool
+	}{
+		{"contents", "read", true},
+		{"contents", "write", true},
+		{"contents", "admin", false},
+		{"workflows", "write", true},
+		{"workflows", "read", false},
+		{"bogus", "read", false},
+		{"contents", "superuser", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.key+":"+tt.level, func(t *testing.T) {
+			if got := perm.ValidKeyLevel(tt.key, tt.level); got != tt.want {
+				t.Fatalf("ValidKeyLevel(%q, %q) = %v, want %v", tt.key, tt.level, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCatalogLevelsAreValid(t *testing.T) {
+	for key, levels := range perm.Catalog {
+		for _, l := range levels {
+			if !perm.ValidLevel(l) {
+				t.Errorf("Catalog[%q] contains invalid level %q", key, l)
+			}
+		}
+	}
+}

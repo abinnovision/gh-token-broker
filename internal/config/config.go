@@ -183,15 +183,15 @@ func validate(cfg *Config) error {
 	return nil
 }
 
-// checkPermissions rejects any permission key not in the canonical table or
-// any invalid level at load time (fail-closed at startup).
+// checkPermissions rejects any permission key not in the canonical table, any
+// invalid level, or any key/level combination that GitHub does not support.
 func checkPermissions(where string, perms map[string]string) error {
 	for k, v := range perms {
 		if !perm.ValidKey(k) {
 			return fmt.Errorf("%s: unknown permission key %q (not in canonical allow-list)", where, k)
 		}
-		if !perm.ValidLevel(v) {
-			return fmt.Errorf("%s: permission %q has invalid level %q (want read|write|admin)", where, k, v)
+		if !perm.ValidKeyLevel(k, v) {
+			return fmt.Errorf("%s: permission %q does not support level %q", where, k, v)
 		}
 	}
 	return nil
