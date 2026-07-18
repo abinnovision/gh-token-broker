@@ -4,6 +4,8 @@
 // server can all depend on it without creating import cycles.
 package perm
 
+import "fmt"
+
 // levels defines the permission lattice: read < write < admin. Any level
 // string outside this table is invalid and treated as fail-closed (dropped).
 var levels = map[string]int{
@@ -128,4 +130,33 @@ func Satisfies(required, granted map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// LevelOrd returns the numeric ordinal for a permission level string (read=1,
+// write=2, admin=3). Unknown levels return 0.
+func LevelOrd(level string) int {
+	return levels[level]
+}
+
+// Gaps reports, for each key in required that granted fails to satisfy, a
+// human-readable reason: either the key is missing from granted entirely, or
+// granted's level for that key is below what's required. Both inputs are
+// normalized first, mirroring Satisfies. Returns nil when required is fully
+// satisfied by granted.
+func Gaps(required, granted map[string]string) map[string]string {
+	r := Normalize(required)
+	g := Normalize(granted)
+	gaps := map[string]string{}
+	for k, v := range r {
+		gv, ok := g[k]
+		if !ok {
+			gaps[k] = fmt.Sprintf("need %s, not granted", v)
+		} else if levels[gv] < levels[v] {
+			gaps[k] = fmt.Sprintf("need %s, have %s", v, gv)
+		}
+	}
+	if len(gaps) == 0 {
+		return nil
+	}
+	return gaps
 }

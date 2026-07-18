@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/google/go-github/v66/github"
@@ -117,6 +119,90 @@ func TestIntersectPermissionsMatrix(t *testing.T) {
 	}
 	if _, ok := got["bogus_key"]; ok {
 		t.Errorf("unknown/absent key must be dropped: %v", got)
+	}
+}
+
+func testClientWithApps(baseURL string, hc *http.Client) *Client {
+	ghc := github.NewClient(hc)
+	u, _ := url.Parse(baseURL + "/")
+	ghc.BaseURL = u
+	c := testClient(baseURL, hc)
+	c.apps = ghc
+	return c
+}
+
+func TestValidateAppPermissionsHappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"test-app","permissions":{"contents":"write","issues":"write"}}`))
+	}))
+	defer srv.Close()
+	c := testClientWithApps(srv.URL, srv.Client())
+
+	err := c.ValidateAppPermissions(context.Background(), map[string]string{"contents": "read"})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestValidateAppPermissionsMissingKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"test-app","permissions":{"contents":"read"}}`))
+	}))
+	defer srv.Close()
+	c := testClientWithApps(srv.URL, srv.Client())
+
+	err := c.ValidateAppPermissions(context.Background(), map[string]string{"contents": "read", "issues": "write"})
+	if err == nil {
+		t.Fatal("expected error for missing permission")
+	}
+	if !strings.Contains(err.Error(), "issues") {
+		t.Errorf("error should mention missing key 'issues': %v", err)
+	}
+}
+
+func TestValidateAppPermissionsInsufficientLevel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"test-app","permissions":{"contents":"read"}}`))
+	}))
+	defer srv.Close()
+	c := testClientWithApps(srv.URL, srv.Client())
+
+	err := c.ValidateAppPermissions(context.Background(), map[string]string{"contents": "write"})
+	if err == nil {
+		t.Fatal("expected error for insufficient level")
+	}
+	if !strings.Contains(err.Error(), "need write, have read") {
+		t.Errorf("error should describe level mismatch: %v", err)
+	}
+}
+
+func TestValidateAppPermissionsEmptyRequired(t *testing.T) {
+	c := testClient("http://unused", http.DefaultClient)
+	err := c.ValidateAppPermissions(context.Background(), map[string]string{})
+	if err != nil {
+		t.Fatalf("empty required should pass trivially, got %v", err)
+	}
+}
+
+func TestValidateAppPermissionsAPIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	c := testClientWithApps(srv.URL, srv.Client())
+
+	err := c.ValidateAppPermissions(context.Background(), map[string]string{"contents": "read"})
+	if err == nil {
+		t.Fatal("expected error on API failure")
+	}
+	if !strings.Contains(err.Error(), "fetch app manifest") {
+		t.Errorf("error should wrap API failure: %v", err)
 	}
 }
 
