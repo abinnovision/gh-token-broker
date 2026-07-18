@@ -74,14 +74,14 @@ func run(logger *slog.Logger, configPath string) error {
 		return err
 	}
 
-	requiredPerms := cfg.Policy.AggregateGrantPermissions()
+	requiredPerms := cfg.AggregateGrantPermissions()
 	if err := ghClient.ValidateAppPermissions(ctx, requiredPerms); err != nil {
 		return err
 	}
 
 	auditLog := audit.New(logger)
 	srv := server.New(authn, engine, ghClient,
-		auditLog, logger, cfg.TokenIssuance.Issuer)
+		auditLog, logger, cfg.Server.Issuer)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Bind,
@@ -105,7 +105,7 @@ func run(logger *slog.Logger, configPath string) error {
 	logger.Info("listening",
 		"bind", cfg.Server.Bind,
 		"version", version,
-		"policies", len(cfg.Policy.Policies))
+		"policies", len(cfg.Policies))
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err
 	}

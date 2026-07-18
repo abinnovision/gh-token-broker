@@ -26,15 +26,14 @@ oidc:
 githubApp:
   appId: 12345
   privateKeyPath: /etc/gh-token-broker/app.pem
-tokenIssuance:
+server:
   issuer: "https://broker.example.com"
-policy:
-  policies:
-    - name: allow-acme
-      condition: caller.repository_owner == "acme"
-      grant:
-        permissions:
-          contents: read
+policies:
+  - name: allow-acme
+    condition: caller.repository_owner == "acme"
+    grant:
+      permissions:
+        contents: read
 `
 
 func TestLoadValidConfigAppliesDefaults(t *testing.T) {
@@ -54,8 +53,51 @@ func TestLoadValidConfigAppliesDefaults(t *testing.T) {
 	if cfg.Policy.CostLimit != 10000 || cfg.Policy.MaxRepositories != 256 {
 		t.Errorf("policy defaults wrong: %+v", cfg.Policy)
 	}
-	if len(cfg.Policy.Policies) != 1 || cfg.Policy.Policies[0].Name != "allow-acme" {
-		t.Errorf("policies = %+v, want allow-acme", cfg.Policy.Policies)
+	if len(cfg.Policies) != 1 || cfg.Policies[0].Name != "allow-acme" {
+		t.Errorf("policies = %+v, want allow-acme", cfg.Policies)
+	}
+}
+
+func TestRejectLegacyTokenIssuance(t *testing.T) {
+	body := `
+oidc:
+  audience: gh-token-broker
+githubApp:
+  appId: 12345
+  privateKeyPath: /etc/gh-token-broker/app.pem
+tokenIssuance:
+  issuer: "https://broker.example.com"
+policies:
+  - name: x
+    condition: "true"
+    grant:
+      permissions:
+        contents: read
+`
+	if _, err := config.Load(write(t, body)); err == nil {
+		t.Fatal("tokenIssuance must be rejected (use server.issuer)")
+	}
+}
+
+func TestRejectLegacyPolicyPolicies(t *testing.T) {
+	body := `
+oidc:
+  audience: gh-token-broker
+githubApp:
+  appId: 12345
+  privateKeyPath: /etc/gh-token-broker/app.pem
+server:
+  issuer: "https://broker.example.com"
+policy:
+  policies:
+    - name: old
+      condition: "true"
+      grant:
+        permissions:
+          contents: read
+`
+	if _, err := config.Load(write(t, body)); err == nil {
+		t.Fatal("policy.policies must be rejected (use top-level policies)")
 	}
 }
 
@@ -72,7 +114,7 @@ func TestPortEnvOverridesDefaultBind(t *testing.T) {
 
 func TestExplicitBindWinsOverPortEnv(t *testing.T) {
 	t.Setenv("PORT", "9090")
-	body := validConfig + "server:\n  bind: \":7000\"\n"
+	body := strings.Replace(validConfig, "  issuer: \"https://broker.example.com\"", "  bind: \":7000\"\n  issuer: \"https://broker.example.com\"", 1)
 	cfg, err := config.Load(write(t, body))
 	if err != nil {
 		t.Fatal(err)
@@ -100,7 +142,7 @@ func TestLoadFromBytesRejectsInvalid(t *testing.T) {
 }
 
 func TestRejectUnknownPermissionKeyInGrant(t *testing.T) {
-	body := strings.Replace(validConfig, "          contents: read", "          not_a_permission: read", 1)
+	body := strings.Replace(validConfig, "        contents: read", "        not_a_permission: read", 1)
 	_, err := config.Load(write(t, body))
 	if err == nil {
 		t.Fatal("unknown permission key in a grant must be rejected at load")
@@ -108,7 +150,7 @@ func TestRejectUnknownPermissionKeyInGrant(t *testing.T) {
 }
 
 func TestRejectGrantWithoutPermissions(t *testing.T) {
-	body := strings.Replace(validConfig, "        permissions:\n          contents: read\n", "", 1)
+	body := strings.Replace(validConfig, "      permissions:\n        contents: read\n", "", 1)
 	if _, err := config.Load(write(t, body)); err == nil {
 		t.Fatal("grant without permissions must be rejected")
 	}
@@ -129,59 +171,53 @@ func TestRejectNoPrivateKeySource(t *testing.T) {
 }
 
 func TestRejectDuplicatePolicyName(t *testing.T) {
-	dup := validConfig + `
-    - name: allow-acme
-      condition: "true"
-      grant:
-        permissions:
-          contents: read
+	dup := validConfig + `- name: allow-acme
+  condition: "true"
+  grant:
+    permissions:
+      contents: read
 `
 	if _, err := config.Load(write(t, dup)); err == nil {
 		t.Fatal("duplicate policy name must be rejected")
 	}
 }
 
-func TestTokenIssuanceRequiresIssuer(t *testing.T) {
-	body := strings.Replace(validConfig, "tokenIssuance:\n  issuer: \"https://broker.example.com\"\n", "", 1)
+func TestServerIssuerRequired(t *testing.T) {
+	body := strings.Replace(validConfig, "server:\n  issuer: \"https://broker.example.com\"\n", "", 1)
 	if _, err := config.Load(write(t, body)); err == nil {
-		t.Fatal("missing tokenIssuance.issuer must be rejected")
+		t.Fatal("missing server.issuer must be rejected")
 	}
 }
 
-func TestTokenIssuanceRejectsNonHTTPSIssuer(t *testing.T) {
+func TestServerIssuerRejectsNonHTTPS(t *testing.T) {
 	body := strings.Replace(validConfig, "https://broker.example.com", "http://broker.example.com", 1)
 	if _, err := config.Load(write(t, body)); err == nil {
-		t.Fatal("non-https tokenIssuance.issuer must be rejected")
+		t.Fatal("non-https server.issuer must be rejected")
 	}
 }
 
-func TestTokenIssuanceAcceptsValidIssuer(t *testing.T) {
+func TestServerIssuerAcceptsValid(t *testing.T) {
 	cfg, err := config.Load(write(t, validConfig))
 	if err != nil {
-		t.Fatalf("valid tokenIssuance config must be accepted: %v", err)
+		t.Fatalf("valid server.issuer must be accepted: %v", err)
 	}
-	if cfg.TokenIssuance.Issuer != "https://broker.example.com" {
-		t.Errorf("issuer = %q", cfg.TokenIssuance.Issuer)
+	if cfg.Server.Issuer != "https://broker.example.com" {
+		t.Errorf("issuer = %q", cfg.Server.Issuer)
 	}
 }
 
 func TestRejectLegacyPolicyProperties(t *testing.T) {
-	legacyRules := strings.Replace(validConfig, "  policies:", "  rules:", 1)
-	if _, err := config.Load(write(t, legacyRules)); err == nil {
-		t.Fatal("legacy policy.rules must be rejected")
-	}
-
-	legacyOnError := strings.Replace(validConfig, "        permissions:\n", "        onError: skip\n        permissions:\n", 1)
+	legacyOnError := strings.Replace(validConfig, "      permissions:\n", "      onError: skip\n      permissions:\n", 1)
 	if _, err := config.Load(write(t, legacyOnError)); err == nil {
 		t.Fatal("legacy onError must be rejected")
 	}
 
-	legacyWhen := strings.Replace(validConfig, "      condition:", "      when:", 1)
+	legacyWhen := strings.Replace(validConfig, "    condition:", "    when:", 1)
 	if _, err := config.Load(write(t, legacyWhen)); err == nil {
 		t.Fatal("legacy when must be rejected")
 	}
 
-	legacyRepositories := strings.Replace(validConfig, "        permissions:\n", "        repositories: [\"acme/app\"]\n        permissions:\n", 1)
+	legacyRepositories := strings.Replace(validConfig, "      permissions:\n", "      repositories: [\"acme/app\"]\n      permissions:\n", 1)
 	if _, err := config.Load(write(t, legacyRepositories)); err == nil {
 		t.Fatal("grant.repositories must be rejected")
 	}
@@ -240,8 +276,8 @@ func TestAggregateGrantPermissions(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			pc := config.PolicyConfig{Policies: tt.policies}
-			got := pc.AggregateGrantPermissions()
+			cfg := &config.Config{Policies: tt.policies}
+			got := cfg.AggregateGrantPermissions()
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("AggregateGrantPermissions() = %v, want %v", got, tt.want)
 			}

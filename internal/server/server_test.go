@@ -65,7 +65,7 @@ type harness struct {
 
 func newHarness(t *testing.T, policies []config.Policy) harness {
 	t.Helper()
-	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256, Policies: policies}}
+	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256}, Policies: policies}
 	engine, err := policy.New(cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("policy.New: %v", err)
@@ -409,7 +409,7 @@ func TestTokenExchangeRejectsUnsupportedRequestedTokenType(t *testing.T) {
 }
 
 func TestTokenExchangeSubjectTokenVerificationFailureIsInvalidGrant(t *testing.T) {
-	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256, Policies: []config.Policy{allowTokenPolicy()}}}
+	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256}, Policies: []config.Policy{allowTokenPolicy()}}
 	engine, err := policy.New(cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("policy.New: %v", err)
@@ -458,7 +458,7 @@ func TestTokenExchangeIgnoresMismatchedAudience(t *testing.T) {
 }
 
 func TestTokenExchangeEmptyScopeMintErrorIsInvalidGrant(t *testing.T) {
-	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256, Policies: []config.Policy{allowTokenPolicy()}}}
+	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256}, Policies: []config.Policy{allowTokenPolicy()}}
 	engine, err := policy.New(cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("policy.New: %v", err)

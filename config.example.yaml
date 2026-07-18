@@ -1,11 +1,11 @@
 # gh-token-broker example configuration.
-#
-# Policy is CEL-only: every policy has a CEL `condition` plus a static,
-# operator-authored permission grant. Every matching policy contributes to one
-# combined permission grant; policy conditions authorize repositories.
 
 server:
   bind: ":8080"
+  # Stable, publicly resolvable HTTPS URL matching how this service is
+  # externally reachable. Used verbatim as the OAuth "issuer" value and in
+  # RFC 8414 metadata. Required.
+  issuer: "https://gh-token-broker.example.com"
 
 oidc:
   # GitHub Actions OIDC issuer (pinned). Override only for GHES.
@@ -23,31 +23,28 @@ githubApp:
   privateKeyPath: "/etc/gh-token-broker/app.pem"
   # privateKeyEnv: "GITHUB_APP_PRIVATE_KEY"
 
-# RFC 8693 OAuth 2.0 Token Exchange endpoint configuration.
-tokenIssuance:
-  # Stable, publicly resolvable HTTPS URL matching how this service is
-  # externally reachable. Used verbatim as the OAuth "issuer" value and in
-  # RFC 8414 metadata. Required.
-  issuer: "https://gh-token-broker.example.com"
-
 policy:
   # CEL runtime cost limit per evaluation (defense against pathological policies).
   costLimit: 10000
   # Cap on a caller-supplied request.repositories list before it is bound as a
   # CEL variable. Oversized requests are rejected, never truncated.
   maxRepositories: 256
-  policies:
-    # ANCHORED matching only: use == or `in [...]` against id-anchored caller
-    # claims. Never use substring/prefix matching (no such helpers are exposed).
-    - name: acme-ci
-      condition: 'caller.repository_owner == "acme" && caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")'
-      grant:
-        permissions:
-          contents: read
-    # Conditions authorize requested repositories directly, which supports
-    # dynamic targets without enumerating them in configuration:
-    - name: gitops-sibling
-      condition: 'request.repositories.all(r, r == caller.repository + "-gitops")'
-      grant:
-        permissions:
-          contents: read
+
+# Policy is CEL-only: every policy has a CEL `condition` plus a static,
+# operator-authored permission grant. Every matching policy contributes to one
+# combined permission grant; policy conditions authorize repositories.
+policies:
+  # ANCHORED matching only: use == or `in [...]` against id-anchored caller
+  # claims. Never use substring/prefix matching (no such helpers are exposed).
+  - name: acme-ci
+    condition: 'caller.repository_owner == "acme" && caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")'
+    grant:
+      permissions:
+        contents: read
+  # Conditions authorize requested repositories directly, which supports
+  # dynamic targets without enumerating them in configuration:
+  - name: gitops-sibling
+    condition: 'request.repositories.all(r, r == caller.repository + "-gitops")'
+    grant:
+      permissions:
+        contents: read
