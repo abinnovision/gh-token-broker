@@ -297,7 +297,7 @@ func decodeScope(scope string) (map[string]string, bool) {
 			return nil, false
 		}
 		key, level := tok[:idx], tok[idx+1:]
-		if !perm.ValidKey(key) || !perm.ValidLevel(level) {
+		if !perm.ValidKeyLevel(key, level) {
 			return nil, false
 		}
 		perms[key] = level

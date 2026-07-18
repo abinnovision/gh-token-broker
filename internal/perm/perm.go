@@ -4,6 +4,8 @@
 // server can all depend on it without creating import cycles.
 package perm
 
+//go:generate bash -c "../../scripts/gen-catalog.sh > catalog_gen.go"
+
 import "fmt"
 
 // levels defines the permission lattice: read < write < admin. Any level
@@ -21,8 +23,7 @@ var levels = map[string]int{
 // it as new permissions are needed (and add a config-load test for the new
 // key). Names mirror GitHub's installation-token permission field names.
 var Canonical = map[string]bool{
-	"actions":                true,
-	"actions_variables":      true,
+	"actions":           true,
 	"administration":         true,
 	"checks":                 true,
 	"contents":               true,
@@ -159,4 +160,22 @@ func Gaps(required, granted map[string]string) map[string]string {
 		return nil
 	}
 	return gaps
+}
+
+// ValidKeyLevel reports whether key is a canonical permission key and level is
+// valid for that specific key per the GitHub API catalog.
+func ValidKeyLevel(key, level string) bool {
+	if !Canonical[key] {
+		return false
+	}
+	allowed, ok := Catalog[key]
+	if !ok {
+		return ValidLevel(level)
+	}
+	for _, l := range allowed {
+		if l == level {
+			return true
+		}
+	}
+	return false
 }
