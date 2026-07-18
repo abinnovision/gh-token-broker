@@ -43,7 +43,15 @@ func main() {
 }
 
 func run(logger *slog.Logger, configPath string) error {
-	cfg, err := config.Load(configPath)
+	var cfg *config.Config
+	var err error
+	if raw := os.Getenv("GH_TOKEN_BROKER_CONFIG"); raw != "" {
+		logger.Info("loading config", "config_source", "env")
+		cfg, err = config.LoadFromBytes([]byte(raw))
+	} else {
+		logger.Info("loading config", "config_source", "file")
+		cfg, err = config.Load(configPath)
+	}
 	if err != nil {
 		return err
 	}
