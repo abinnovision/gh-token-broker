@@ -70,7 +70,7 @@ value uses a typed prefix:
 | ------ | ----------- | ------- |
 | `repo:owner/name` | A specific repository. | `repo:acme/app` |
 | `org:name` | All repositories in an organization. | `org:acme` |
-| `enterprise:slug` | Enterprise-level access. | `enterprise:abi-group-gmbh` |
+| `enterprise:slug` | Enterprise-level access. | `enterprise:acme-llc` |
 | `owner/repo` | Shorthand for `repo:owner/repo` (backward compat). | `acme/app` |
 
 **Constraints per request:**
