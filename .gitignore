@@ -104,4 +104,4 @@ dist/
 
 # GitHub App private keys (this project loads these at runtime)
 *.pem
-gen-schema
+/gen-schema

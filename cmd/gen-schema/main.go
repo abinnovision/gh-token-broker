@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,11 +22,11 @@ import (
 
 func main() {
 	r := &jsonschema.Reflector{
-		Anonymous:                 true,
-		DoNotReference:            true,
-		FieldNameTag:              "yaml",
+		Anonymous:                  true,
+		DoNotReference:             true,
+		FieldNameTag:               "yaml",
 		RequiredFromJSONSchemaTags: true,
-		Mapper:                    mapper,
+		Mapper:                     mapper,
 	}
 
 	schema := r.Reflect(&config.Config{})
@@ -45,7 +46,7 @@ func main() {
 	}
 
 	outPath := filepath.Join(moduleRoot(), "config.schema.json")
-	if err := os.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
+	if err := os.WriteFile(outPath, append(out, '\n'), 0o600); err != nil { //nolint:gosec // G306: generated schema is not sensitive
 		fmt.Fprintf(os.Stderr, "write schema: %v\n", err)
 		os.Exit(1)
 	}
@@ -103,7 +104,7 @@ func setAdditionalPropertiesFalse(s *jsonschema.Schema) {
 }
 
 func moduleRoot() string {
-	out, err := exec.Command("go", "env", "GOMOD").Output()
+	out, err := exec.CommandContext(context.Background(), "go", "env", "GOMOD").Output()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "find module root: %v\n", err)
 		os.Exit(1)
