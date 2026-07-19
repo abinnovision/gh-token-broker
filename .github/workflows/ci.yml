@@ -39,11 +39,12 @@ jobs:
     # Maintain the Release PR and, when it is merged, cut the tag + GitHub
     # Release. Runs only on pushes to main after the full test matrix is green.
     #
-    # Authenticates with a short-lived GitHub App token brokered per-run via
-    # oidc-token-cli's token-exchange against a deployed gh-token-broker (this
-    # project dogfooding itself), not the default GITHUB_TOKEN, for two reasons:
+    # Authenticates with a short-lived GitHub App token obtained via
+    # exchange-github-token, which exchanges the GitHub Actions OIDC token
+    # against a deployed gh-token-broker (this project dogfooding itself).
+    # Not the default GITHUB_TOKEN, for two reasons:
     #   1. release-please needs contents:write + issues:write (PR labels) +
-    #      pull-requests:write; requested explicitly via --scope and minted by
+    #      pull-requests:write; requested explicitly via scope and minted by
     #      the broker (subject to its CEL policy authorizing this resource).
     #   2. PRs opened by GITHUB_TOKEN don't trigger workflows; an App token's do,
     #      so the Release PR gets the normal test matrix.
@@ -56,36 +57,13 @@ jobs:
     outputs:
       versions: ${{ steps.rp.outputs.versions }}
     steps:
-      - name: Install oidc-token-cli
-        uses: jaxxstorm/action-install-gh-release@v3.0.0
-        with:
-          repo: abinnovision/oidc-token-cli
-          cache: enable
-      - name: Fetch release token from gh-token-broker
+      - name: Exchange GitHub token
         id: gtb
-        env:
-          GTB_URL: ${{ secrets.GTB_URL }} # OIDC issuer base; exposes /.well-known/openid-configuration
-        run: |
-          set -euo pipefail
-
-          token=$(oidc-token \
-            --issuer "${GTB_URL}" \
-            --client-id gtb-abinnovision \
-            --grant-type token-exchange \
-            --subject-token-source github-actions \
-            --subject-token-type urn:ietf:params:oauth:token-type:id_token \
-            --audience gtb-abinnovision \
-            --resource abinnovision/gh-token-broker \
-            --scope "contents:write issues:write pull_requests:write" \
-            --non-interactive)
-
-          if [ -z "${token}" ]; then
-            echo "gh-token-broker returned no token" >&2
-            exit 1
-          fi
-
-          echo "::add-mask::${token}"
-          echo "token=${token}" >> "$GITHUB_OUTPUT"
+        uses: abinnovision/actions@exchange-github-token-v1
+        with:
+          broker-url: ${{ vars.GTB_URL }}
+          scope: "contents:write issues:write pull_requests:write"
+          repositories: abinnovision/gh-token-broker
       - uses: abinnovision/actions@run-release-please-v1
         id: rp
         with:
