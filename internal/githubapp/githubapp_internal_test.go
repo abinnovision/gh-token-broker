@@ -283,6 +283,37 @@ func TestValidateAppPermissionsAPIError(t *testing.T) {
 	}
 }
 
+func TestFetchAppIdentity(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/app":
+			_, _ = w.Write([]byte(`{"slug": "test-app", "permissions": {}}`))
+		case "/users/test-app[bot]":
+			_, _ = w.Write([]byte(`{"id": 12345}`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	c := testClientWithApps(srv.URL, srv.Client())
+
+	identity, err := c.FetchAppIdentity(context.Background())
+	if err != nil {
+		t.Fatalf("FetchAppIdentity: %v", err)
+	}
+	if identity.Name != "test-app[bot]" {
+		t.Errorf("Name = %q, want %q", identity.Name, "test-app[bot]")
+	}
+	if identity.Email != "12345+test-app[bot]@users.noreply.github.com" {
+		t.Errorf("Email = %q, want %q", identity.Email, "12345+test-app[bot]@users.noreply.github.com")
+	}
+	if c.AppIdentity() != identity {
+		t.Errorf("AppIdentity() = %v, want %v", c.AppIdentity(), identity)
+	}
+}
+
 func TestPermMapDropsNilFields(t *testing.T) {
 	read := "read"
 	m := permMap(&github.InstallationPermissions{Contents: &read})

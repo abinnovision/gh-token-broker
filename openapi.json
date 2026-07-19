@@ -169,6 +169,14 @@
           "scope": {
             "type": "string",
             "description": "Present only when the granted scope differs from the requested scope."
+          },
+          "app_name": {
+            "type": "string",
+            "description": "The GitHub App bot username, e.g. 'my-app[bot]'. Can be used as git committer name."
+          },
+          "app_email": {
+            "type": "string",
+            "description": "The GitHub App bot noreply email, e.g. '12345+my-app[bot]@users.noreply.github.com'. Can be used as git committer email."
           }
         }
       },

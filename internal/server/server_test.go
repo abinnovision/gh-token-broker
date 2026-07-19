@@ -24,6 +24,15 @@ import (
 
 const testIssuer = "https://issuer.example.com"
 
+func testAppIdentity() githubapp.AppIdentity {
+	return githubapp.AppIdentity{
+		Slug:  "test-app",
+		BotID: 99,
+		Name:  "test-app[bot]",
+		Email: "99+test-app[bot]@users.noreply.github.com",
+	}
+}
+
 type fakeAuth struct {
 	id  *auth.Identity
 	err error
@@ -80,7 +89,7 @@ func newHarness(t *testing.T, policies []config.Policy) harness {
 	var buf bytes.Buffer
 	auditLog := audit.New(slog.New(slog.NewJSONHandler(&buf, nil)))
 	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter,
-		auditLog, slog.New(slog.DiscardHandler), testIssuer)
+		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity())
 	return harness{server: srv, minter: minter, audit: &buf}
 }
 
@@ -228,6 +237,12 @@ func TestTokenIssued(t *testing.T) {
 	// should be omitted from the response.
 	if _, ok := out["scope"]; ok {
 		t.Errorf("scope should be omitted when granted == requested, got %v", out["scope"])
+	}
+	if out["app_name"] != testAppIdentity().Name {
+		t.Errorf("app_name = %v, want %v", out["app_name"], testAppIdentity().Name)
+	}
+	if out["app_email"] != testAppIdentity().Email {
+		t.Errorf("app_email = %v, want %v", out["app_email"], testAppIdentity().Email)
 	}
 }
 
@@ -418,7 +433,7 @@ func TestTokenExchangeSubjectTokenVerificationFailureIsInvalidGrant(t *testing.T
 	minter := &fakeMinter{}
 	auditLog := audit.New(slog.New(slog.DiscardHandler))
 	srv := server.New(fakeAuth{err: context.DeadlineExceeded}, engine, minter,
-		auditLog, slog.New(slog.DiscardHandler), testIssuer)
+		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity())
 
 	rec := doToken(srv.Handler(), baseTokenForm())
 	if rec.Code != http.StatusBadRequest {
@@ -467,7 +482,7 @@ func TestTokenExchangeEmptyScopeMintErrorIsInvalidGrant(t *testing.T) {
 	minter := &fakeMinter{err: githubapp.ErrEmptyScope}
 	auditLog := audit.New(slog.New(slog.DiscardHandler))
 	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter,
-		auditLog, slog.New(slog.DiscardHandler), testIssuer)
+		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity())
 
 	rec := doToken(srv.Handler(), baseTokenForm())
 	if rec.Code != http.StatusBadRequest {

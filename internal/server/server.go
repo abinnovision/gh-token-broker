@@ -60,11 +60,14 @@ type Server struct {
 	logger       *slog.Logger
 	issuer       string
 	metadataJSON []byte
+	appIdentity  githubapp.AppIdentity
 }
 
 // New constructs a Server. issuer is the broker's own OAuth issuer
 // identifier (an absolute https:// URL); it is used verbatim in RFC 8414
-// metadata.
+// metadata. appIdentity is the GitHub App's bot identity, included in every
+// token-exchange response so consumers can use it as a git committer
+// identity without an extra API call.
 func New(
 	authn Authenticator,
 	engine *policy.Engine,
@@ -72,14 +75,16 @@ func New(
 	auditLog *audit.Logger,
 	logger *slog.Logger,
 	issuer string,
+	appIdentity githubapp.AppIdentity,
 ) *Server {
 	s := &Server{
-		auth:   authn,
-		engine: engine,
-		minter: minter,
-		audit:  auditLog,
-		logger: logger,
-		issuer: issuer,
+		auth:        authn,
+		engine:      engine,
+		minter:      minter,
+		audit:       auditLog,
+		logger:      logger,
+		issuer:      issuer,
+		appIdentity: appIdentity,
 	}
 	s.metadataJSON = buildMetadataJSON(issuer)
 	return s
@@ -139,6 +144,11 @@ type tokenExchangeResponse struct {
 	TokenType string `json:"token_type"`
 	ExpiresIn int64  `json:"expires_in"`
 	Scope     string `json:"scope,omitempty"`
+	// AppName and AppEmail are the GitHub App's bot committer identity, so
+	// consumers can set them as the git commit author/committer without an
+	// extra API call.
+	AppName  string `json:"app_name,omitempty"`
+	AppEmail string `json:"app_email,omitempty"`
 }
 
 // oauthErrorResponse is the RFC 6749 §5.2 token-endpoint error response.
@@ -270,6 +280,8 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		IssuedTokenType: tokenTypeAccessToken,
 		TokenType:       "bearer",
 		ExpiresIn:       int64(time.Until(token.ExpiresAt).Seconds()),
+		AppName:         s.appIdentity.Name,
+		AppEmail:        s.appIdentity.Email,
 	}
 	if !scopeEqual(perms, token.Permissions) {
 		resp.Scope = encodeScope(token.Permissions)
