@@ -1,26 +1,396 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/abinnovision/gh-token-broker/config.schema.json",
-  "title": "gh-token-broker configuration",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["oidc", "githubApp"],
+  "$defs": {
+    "grant": {
+      "properties": {
+        "permissions": {
+          "$ref": "#/$defs/permissions"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "permissions"
+      ]
+    },
+    "permissions": {
+      "properties": {
+        "actions": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "administration": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "artifact_metadata": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "attestations": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "checks": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "code_quality": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "codespaces": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "contents": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "custom_properties_for_organizations": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "dependabot_secrets": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "deployments": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "discussions": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "email_addresses": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_custom_properties_for_organizations": {
+          "enum": [
+            "read",
+            "write",
+            "admin"
+          ]
+        },
+        "environments": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "followers": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "git_ssh_keys": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "gpg_keys": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "interaction_limits": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "issues": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "members": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "merge_queues": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "metadata": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_administration": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_announcement_banners": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_copilot_agent_settings": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_copilot_seat_management": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_custom_org_roles": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_custom_properties": {
+          "enum": [
+            "read",
+            "write",
+            "admin"
+          ]
+        },
+        "organization_custom_roles": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_events": {
+          "enum": [
+            "read"
+          ]
+        },
+        "organization_hooks": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_packages": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_personal_access_token_requests": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_personal_access_tokens": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_plan": {
+          "enum": [
+            "read"
+          ]
+        },
+        "organization_projects": {
+          "enum": [
+            "read",
+            "write",
+            "admin"
+          ]
+        },
+        "organization_secrets": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_self_hosted_runners": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_user_blocking": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "packages": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "pages": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "profile": {
+          "enum": [
+            "write"
+          ]
+        },
+        "pull_requests": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "repository_custom_properties": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "repository_hooks": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "repository_projects": {
+          "enum": [
+            "read",
+            "write",
+            "admin"
+          ]
+        },
+        "secret_scanning_alerts": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "secrets": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "security_events": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "single_file": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "starring": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "statuses": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "vulnerability_alerts": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "workflows": {
+          "enum": [
+            "write"
+          ]
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "minProperties": 1
+    },
+    "policy": {
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "condition": {
+          "type": "string",
+          "minLength": 1,
+          "description": "CEL expression evaluating to bool; the condition under which a policy contributes its grant"
+        },
+        "grant": {
+          "$ref": "#/$defs/grant"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "name",
+        "condition",
+        "grant"
+      ]
+    }
+  },
   "properties": {
     "server": {
-      "type": "object",
-      "additionalProperties": false,
       "properties": {
-        "bind": { "type": "string", "default": ":8080" },
+        "bind": {
+          "type": "string",
+          "default": ":8080"
+        },
         "issuer": {
           "type": "string",
-          "description": "The broker's own OAuth issuer identifier — a stable, absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint."
+          "description": "The broker's own OAuth issuer identifier — a stable absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint."
         }
-      }
+      },
+      "additionalProperties": false,
+      "type": "object"
     },
     "oidc": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["audience"],
       "properties": {
         "issuer": {
           "type": "string",
@@ -31,15 +401,24 @@
           "minLength": 1,
           "description": "REQUIRED proxy-specific OIDC audience; tokens whose aud does not match exactly are rejected"
         },
-        "clockSkewSeconds": { "type": "integer", "minimum": 0, "default": 60 }
-      }
+        "clockSkewSeconds": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 60
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "audience"
+      ]
     },
     "githubApp": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["appId"],
       "properties": {
-        "appId": { "type": "integer", "minimum": 1 },
+        "appId": {
+          "type": "integer",
+          "minimum": 1
+        },
         "privateKeyPath": {
           "type": "string",
           "minLength": 1,
@@ -50,48 +429,41 @@
           "minLength": 1,
           "description": "Name of an environment variable holding the App private key PEM."
         }
-      }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "appId"
+      ]
     },
     "policy": {
-      "type": "object",
-      "additionalProperties": false,
       "properties": {
-        "costLimit": { "type": "integer", "minimum": 1, "default": 10000 },
-        "maxRepositories": { "type": "integer", "minimum": 1, "default": 256 }
-      }
+        "costLimit": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10000
+        },
+        "maxRepositories": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 256
+        }
+      },
+      "additionalProperties": false,
+      "type": "object"
     },
     "policies": {
-      "type": "array",
-      "items": { "$ref": "#/$defs/policy" }
+      "items": {
+        "$ref": "#/$defs/policy"
+      },
+      "type": "array"
     }
   },
-  "$defs": {
-    "permissions": {
-      "type": "object",
-      "minProperties": 1,
-      "additionalProperties": { "enum": ["read", "write", "admin"] }
-    },
-    "grant": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["permissions"],
-      "properties": {
-        "permissions": { "$ref": "#/$defs/permissions" }
-      }
-    },
-    "policy": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["name", "condition", "grant"],
-      "properties": {
-        "name": { "type": "string", "minLength": 1 },
-        "condition": {
-          "type": "string",
-          "minLength": 1,
-          "description": "CEL expression evaluating to bool; the condition under which a policy contributes its grant"
-        },
-        "grant": { "$ref": "#/$defs/grant" }
-      }
-    }
-  }
+  "additionalProperties": false,
+  "type": "object",
+  "required": [
+    "oidc",
+    "githubApp"
+  ],
+  "title": "gh-token-broker configuration"
 }
