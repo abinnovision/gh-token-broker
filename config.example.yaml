@@ -26,25 +26,31 @@ githubApp:
 policy:
   # CEL runtime cost limit per evaluation (defense against pathological policies).
   costLimit: 10000
-  # Cap on a caller-supplied request.repositories list before it is bound as a
-  # CEL variable. Oversized requests are rejected, never truncated.
+  # Cap on caller-supplied resource values before they are bound as a CEL
+  # variable. Oversized requests are rejected, never truncated.
   maxRepositories: 256
 
 # Policy is CEL-only: every policy has a CEL `condition` plus a static,
 # operator-authored permission grant. Every matching policy contributes to one
-# combined permission grant; policy conditions authorize repositories.
+# combined permission grant; policy conditions authorize resources.
 policies:
   # ANCHORED matching only: use == or `in [...]` against id-anchored caller
   # claims. Never use substring/prefix matching (no such helpers are exposed).
   - name: acme-ci
-    condition: 'caller.repository_owner == "acme" && caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")'
+    condition: 'caller.repository_owner == "acme" && caller.repository == "acme/app" && request.resources.all(r, r == "repo:acme/app")'
     grant:
       permissions:
         contents: read
-  # Conditions authorize requested repositories directly, which supports
+  # Conditions authorize requested resources directly, which supports
   # dynamic targets without enumerating them in configuration:
   - name: gitops-sibling
-    condition: 'request.repositories.all(r, r == caller.repository + "-gitops")'
+    condition: 'request.resources.all(r, r == "repo:" + caller.repository + "-gitops")'
+    grant:
+      permissions:
+        contents: read
+  # Organization-wide policy: grant read access to all repos in the caller's org.
+  - name: org-wide-read
+    condition: 'request.resources.all(r, r == "org:" + caller.repository_owner)'
     grant:
       permissions:
         contents: read
