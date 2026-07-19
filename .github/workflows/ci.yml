@@ -61,7 +61,7 @@ jobs:
         id: gtb
         uses: abinnovision/actions@exchange-github-token-v1
         with:
-          broker-url: ${{ vars.GTB_URL }}
+          broker-url: ${{ vars.TOKEN_BROKER_URL }}
           scope: "contents:write issues:write pull_requests:write"
           repositories: abinnovision/gh-token-broker
       - uses: abinnovision/actions@run-release-please-v1
