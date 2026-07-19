@@ -4,6 +4,28 @@ An OAuth 2.0 Security Token Service (STS) that mints least-privilege GitHub App
 installation tokens for GitHub Actions workflows, gated by CEL policies.
 Implements [RFC 8693 Token Exchange](https://datatracker.ietf.org/doc/html/rfc8693).
 
+## Why a token broker?
+
+GitHub Actions workflows that need to reach beyond their own repository hit a
+ceiling quickly. The default `GITHUB_TOKEN` is scoped to the current repo: it
+cannot check out a shared library, push to a sibling gitops repo, or trigger a
+workflow elsewhere. Worse, events it creates are silently suppressed, so PRs and
+releases opened by automation like release-please never fire downstream CI.
+
+The usual workaround is a Personal Access Token. PATs are long-lived, broadly
+scoped, tied to an individual, and hard to audit. When someone leaves or a token
+leaks, every pipeline that depends on it breaks or is compromised.
+
+GitHub Apps improve on this because installation tokens are short-lived and not
+bound to a person, but a single token still has access to every repository the
+App is installed on. There is no built-in way to scope it to what one workflow
+actually needs.
+
+That is the gap this broker fills. A workflow presents its OIDC identity, CEL
+policies decide the exact repositories and permissions to grant, and the broker
+mints a token scoped to that and nothing more. Short-lived, least-privilege,
+auditable.
+
 ## How it works
 
 1. A GitHub Actions workflow sends its OIDC ID token to the broker.
