@@ -39,41 +39,49 @@ Use exactly one of `githubApp.privateKeyPath` and `githubApp.privateKeyEnv`.
 
 ## Policies
 
-Policies are unordered, additive allow statements. Every `condition` is
-evaluated; matching permission grants use the highest level per key
-(`read < write < admin`). Each condition must authorize the requested
-repositories (`request.repositories`). A request is allowed only if the
-combined permissions cover its request. The broker mints exactly that
-requested scope.
+Policies are additive allow rules evaluated in no guaranteed order. The broker evaluates every policy condition and merges matching grants, using the highest permission level per key (`read < write < admin`).
 
-`grant.permissions` is required and static. See
-[`internal/perm/catalog_gen.go`](./internal/perm/catalog_gen.go) for the full
-list of supported permission keys and their allowed levels (generated from the
-GitHub REST API OpenAPI spec). Runtime CEL errors are logged and skipped;
-invalid CEL prevents startup.
+**Key rules:**
 
-CEL receives only these variables:
+- Each condition must authorize all requested repositories (`request.repositories`).
+- A request succeeds only when combined grants fully cover the requested scope.
+- The broker mints a token scoped to exactly what was requested.
+- `grant.permissions` is required and static. See [`internal/perm/catalog_gen.go`](./internal/perm/catalog_gen.go) for supported keys and levels (generated from the GitHub REST API OpenAPI spec).
+- Invalid CEL expressions prevent startup. Runtime CEL errors are logged and the policy is skipped.
 
-| Variable | Contents |
-| --- | --- |
-| `caller` | Typed verified claims: repository, IDs, owner, and workflow ref. |
-| `request` | Typed repositories list. |
+### CEL variables
 
-### Condition examples
+Conditions receive two variables. Unknown fields fail compilation at startup.
 
-Allow a caller to request a token only for its own repository:
+**`caller`** (verified OIDC claims from the GitHub Actions ID token):
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `caller.repository` | `string` | Full repo name (`owner/repo`). |
+| `caller.repository_id` | `string` | Numeric repository ID. |
+| `caller.repository_owner` | `string` | Owner (org or user). |
+| `caller.repository_owner_id` | `string` | Numeric owner ID. |
+| `caller.job_workflow_ref` | `string` | Workflow ref that triggered the run. |
+
+**`request`** (the incoming token request):
+
+| Field | Type | Description |
+| ----- | ---- | ----------- |
+| `request.repositories` | `list(string)` | Target repositories for the token. |
+
+### Examples
+
+Token scoped to the caller's own repository:
 
 ```cel
 caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")
 ```
 
-Allow a caller to request a token only for its `-gitops` sibling repository:
+Token scoped to the caller's `-gitops` sibling:
 
 ```cel
 request.repositories.all(r, r == caller.repository + "-gitops")
 ```
-
-Unknown `caller` or `request` fields fail policy compilation at startup.
 
 ## Run
 
