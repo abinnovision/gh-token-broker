@@ -78,10 +78,13 @@ func run(logger *slog.Logger, configPath string) error {
 	if err := ghClient.ValidateAppPermissions(ctx, requiredPerms); err != nil {
 		return err
 	}
+	if _, err := ghClient.FetchAppIdentity(ctx); err != nil {
+		return err
+	}
 
 	auditLog := audit.New(logger)
 	srv := server.New(authn, engine, ghClient,
-		auditLog, logger, cfg.Server.Issuer)
+		auditLog, logger, cfg.Server.Issuer, ghClient.AppIdentity())
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Bind,

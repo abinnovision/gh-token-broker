@@ -52,14 +52,25 @@ type ScopedToken struct {
 	Repositories []string
 }
 
+// AppIdentity is the GitHub App's bot identity, used as the git committer
+// identity by consumers of a minted token so they need not make an extra API
+// call to discover it.
+type AppIdentity struct {
+	Slug  string
+	BotID int64
+	Name  string
+	Email string
+}
+
 // Client mints scoped tokens using the App's JWT. It is safe for concurrent
 // use.
 type Client struct {
-	appID      int64
-	apps       *github.Client // authenticated with the App JWT
-	httpClient *http.Client   // App-JWT client used for the raw token POST
-	baseURL    string
-	logger     *slog.Logger
+	appID       int64
+	apps        *github.Client // authenticated with the App JWT
+	httpClient  *http.Client   // App-JWT client used for the raw token POST
+	baseURL     string
+	logger      *slog.Logger
+	appIdentity AppIdentity
 }
 
 // New builds a Client from the App config, loading the private key from the
@@ -314,6 +325,54 @@ func permMap(p *github.InstallationPermissions) map[string]string {
 	}
 	return m
 }
+
+// FetchAppIdentity fetches the App's slug (GET /app) and the corresponding
+// bot user's ID (GET /users/{slug}[bot]), then derives the bot's git
+// committer name and noreply email. The result is cached on the Client and
+// returned by AppIdentity.
+func (c *Client) FetchAppIdentity(ctx context.Context) (AppIdentity, error) {
+	app, _, err := c.apps.Apps.Get(ctx, "")
+	if err != nil {
+		return AppIdentity{}, fmt.Errorf("githubapp: fetch app: %w", err)
+	}
+	slug := app.GetSlug()
+
+	url := c.baseURL + "/users/" + slug + "%5Bbot%5D"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return AppIdentity{}, fmt.Errorf("githubapp: build bot user request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return AppIdentity{}, fmt.Errorf("githubapp: fetch bot user: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return AppIdentity{}, fmt.Errorf("githubapp: bot user endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	var botUser struct {
+		ID int64 `json:"id"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&botUser); err != nil {
+		return AppIdentity{}, fmt.Errorf("githubapp: decode bot user: %w", err)
+	}
+
+	identity := AppIdentity{
+		Slug:  slug,
+		BotID: botUser.ID,
+		Name:  slug + "[bot]",
+		Email: fmt.Sprintf("%d+%s[bot]@users.noreply.github.com", botUser.ID, slug),
+	}
+	c.appIdentity = identity
+	return identity, nil
+}
+
+// AppIdentity returns the App's bot identity, as fetched by FetchAppIdentity.
+func (c *Client) AppIdentity() AppIdentity { return c.appIdentity }
 
 // ValidateAppPermissions fetches the App's manifest permissions from GitHub
 // (GET /app) and verifies that they cover every key in required at a
