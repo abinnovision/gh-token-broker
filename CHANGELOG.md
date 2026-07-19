@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.0](https://github.com/abinnovision/gh-token-broker/compare/v0.5.0...v0.6.0) (2026-07-19)
+
+
+### Features
+
+* add typed resource identifiers (repo:, org:, enterprise:) ([#20](https://github.com/abinnovision/gh-token-broker/issues/20)) ([1bf21eb](https://github.com/abinnovision/gh-token-broker/commit/1bf21ebe448287497089ba21c8f200d962682328))
+* **ci:** migrate to exchange-github-token action ([#21](https://github.com/abinnovision/gh-token-broker/issues/21)) ([c3b5392](https://github.com/abinnovision/gh-token-broker/commit/c3b539298a2dc9cb09c440711416c654443931d0))
+* include app bot identity in token exchange response ([#23](https://github.com/abinnovision/gh-token-broker/issues/23)) ([f18f977](https://github.com/abinnovision/gh-token-broker/commit/f18f9777c66a594774a69d6d5a0c05cbcfa91bb7))
+
 ## [0.5.0](https://github.com/abinnovision/gh-token-broker/compare/v0.4.1...v0.5.0) (2026-07-19)
 
 
