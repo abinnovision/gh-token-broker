@@ -103,6 +103,83 @@ func TestMintScopedTokenSurfacesErrorStatus(t *testing.T) {
 	}
 }
 
+func TestMintInstallationTokenFailsOnEmptyPerms(t *testing.T) {
+	c := testClient("http://unused", http.DefaultClient)
+	_, err := c.MintInstallationToken(context.Background(), 42, nil)
+	if !errors.Is(err, ErrEmptyScope) {
+		t.Fatalf("want ErrEmptyScope, got %v", err)
+	}
+	_, err = c.MintInstallationToken(context.Background(), 42, map[string]string{})
+	if !errors.Is(err, ErrEmptyScope) {
+		t.Fatalf("want ErrEmptyScope, got %v", err)
+	}
+}
+
+func TestMintInstallationTokenSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/app/installations/42/access_tokens" {
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{
+			"token": "ghs_org_token",
+			"expires_at": "2026-07-09T12:00:00Z",
+			"permissions": {"members": "read"}
+		}`))
+	}))
+	defer srv.Close()
+	c := testClient(srv.URL, srv.Client())
+
+	tok, err := c.MintInstallationToken(context.Background(), 42, map[string]string{"members": "read"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.Token != "ghs_org_token" {
+		t.Errorf("token = %q", tok.Token)
+	}
+	if tok.Permissions["members"] != "read" {
+		t.Errorf("permissions = %v", tok.Permissions)
+	}
+	if tok.Repositories != nil {
+		t.Errorf("repositories should be nil for org tokens, got %v", tok.Repositories)
+	}
+}
+
+func TestResolveEnterpriseInstallation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/enterprises/abi-group-gmbh/installation" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id": 99, "permissions": {"members": "read"}}`))
+	}))
+	defer srv.Close()
+	c := testClient(srv.URL, srv.Client())
+
+	inst, err := c.resolveEnterpriseInstallation(context.Background(), "abi-group-gmbh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.GetID() != 99 {
+		t.Errorf("installation ID = %d, want 99", inst.GetID())
+	}
+}
+
+func TestResolveEnterpriseInstallationNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"message":"Not Found"}`))
+	}))
+	defer srv.Close()
+	c := testClient(srv.URL, srv.Client())
+
+	_, err := c.resolveEnterpriseInstallation(context.Background(), "nonexistent")
+	if err == nil {
+		t.Fatal("expected error for 404")
+	}
+}
+
 // TestIntersectPermissionsMatrix covers INV-2 (per-key min level), the
 // absent-key case, and the unknown-permission-key case (INV-10) through the
 // githubapp-exported intersection.

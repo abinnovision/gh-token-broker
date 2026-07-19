@@ -18,6 +18,7 @@ import (
 	"github.com/abinnovision/gh-token-broker/internal/config"
 	"github.com/abinnovision/gh-token-broker/internal/githubapp"
 	"github.com/abinnovision/gh-token-broker/internal/policy"
+	"github.com/abinnovision/gh-token-broker/internal/resource"
 	"github.com/abinnovision/gh-token-broker/internal/server"
 )
 
@@ -33,18 +34,18 @@ func (f fakeAuth) Authenticate(context.Context, string) (*auth.Identity, error) 
 }
 
 type fakeMinter struct {
-	called   bool
-	tok      githubapp.ScopedToken
-	err      error
-	gotOwner string
-	gotRepos []string
-	gotPerms map[string]string
+	called       bool
+	tok          githubapp.ScopedToken
+	err          error
+	gotOwner     string
+	gotResources []resource.Resource
+	gotPerms     map[string]string
 }
 
-func (f *fakeMinter) Mint(_ context.Context, owner string, repos []string, perms map[string]string) (githubapp.ScopedToken, error) {
+func (f *fakeMinter) Mint(_ context.Context, owner string, resources []resource.Resource, perms map[string]string) (githubapp.ScopedToken, error) {
 	f.called = true
 	f.gotOwner = owner
-	f.gotRepos = repos
+	f.gotResources = resources
 	f.gotPerms = perms
 	return f.tok, f.err
 }
@@ -118,7 +119,7 @@ func oauthError(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 func allowTokenPolicy() config.Policy {
 	return config.Policy{
-		Name: "allow-acme-token", Condition: `caller.repository_owner == "acme" && request.repositories.all(r, r == "acme/app")`,
+		Name: "allow-acme-token", Condition: `caller.repository_owner == "acme" && request.resources.all(r, r == "repo:acme/app")`,
 		Grant: config.Grant{
 			Permissions: map[string]string{"contents": "read"},
 		},
@@ -201,8 +202,8 @@ func TestTokenIssued(t *testing.T) {
 	if !h.minter.called {
 		t.Fatal("minter should have been called")
 	}
-	if got := h.minter.gotRepos; len(got) != 1 || got[0] != "acme/app" {
-		t.Fatalf("mint repositories = %v, want [acme/app]", got)
+	if got := h.minter.gotResources; len(got) != 1 || got[0].Kind != resource.KindRepo || got[0].Owner != "acme" || got[0].Name != "app" {
+		t.Fatalf("mint resources = %v, want [repo:acme/app]", got)
 	}
 	if got := h.minter.gotPerms; len(got) != 1 || got["contents"] != "read" {
 		t.Fatalf("mint permissions = %v, want contents:read", got)
@@ -233,7 +234,7 @@ func TestTokenIssued(t *testing.T) {
 func TestTokenConditionAuthorizesDynamicRepositories(t *testing.T) {
 	policy := config.Policy{
 		Name:      "gitops-suffix",
-		Condition: `request.repositories.all(r, r == caller.repository + "-gitops")`,
+		Condition: `request.resources.all(r, r == "repo:" + caller.repository + "-gitops")`,
 		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
 	h := newHarness(t, []config.Policy{policy})
@@ -243,8 +244,8 @@ func TestTokenConditionAuthorizesDynamicRepositories(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if got := h.minter.gotRepos; len(got) != 1 || got[0] != "acme/app-gitops" {
-		t.Fatalf("gotRepos = %v, want [acme/app-gitops]", got)
+	if got := h.minter.gotResources; len(got) != 1 || got[0].Raw != "repo:acme/app-gitops" {
+		t.Fatalf("gotResources = %v, want [repo:acme/app-gitops]", got)
 	}
 }
 
@@ -474,6 +475,38 @@ func TestTokenExchangeEmptyScopeMintErrorIsInvalidGrant(t *testing.T) {
 	}
 	if code := oauthError(t, rec); code != "invalid_grant" {
 		t.Errorf("error = %s, want invalid_grant", code)
+	}
+}
+
+func TestTokenExchangeWithOrgResource(t *testing.T) {
+	orgPolicy := config.Policy{
+		Name: "allow-acme-org", Condition: `caller.repository_owner == "acme" && request.resources.all(r, r == "org:acme")`,
+		Grant: config.Grant{
+			Permissions: map[string]string{"contents": "read"},
+		},
+	}
+	h := newHarness(t, []config.Policy{orgPolicy})
+	form := baseTokenForm()
+	form["resource"] = []string{"org:acme"}
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := h.minter.gotResources; len(got) != 1 || got[0].Kind != resource.KindOrg || got[0].Owner != "acme" {
+		t.Fatalf("mint resources = %v, want [org:acme]", got)
+	}
+}
+
+func TestTokenExchangeRejectsMixedResourceKinds(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
+	form := baseTokenForm()
+	form["resource"] = []string{"repo:acme/app", "org:acme"}
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_target" {
+		t.Errorf("error = %s, want invalid_target", code)
 	}
 }
 

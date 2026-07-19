@@ -136,8 +136,8 @@
           "resource": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "One `owner/repo` value per target repository (repeated form key). All values must share one owner.",
-            "example": ["acme/app"]
+            "description": "Target resource identifiers (repeated form key). Supported formats: `repo:owner/name` (specific repository), `org:name` (organization-wide), `enterprise:slug` (enterprise-wide). Plain `owner/repo` without prefix is accepted as shorthand for `repo:owner/repo`. All values in a single request must share the same type and owner. Only one `org:` or `enterprise:` value is allowed per request.",
+            "example": ["repo:acme/app"]
           },
           "audience": {
             "type": "array",
