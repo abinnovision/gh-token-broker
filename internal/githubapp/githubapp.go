@@ -23,6 +23,7 @@ import (
 
 	"github.com/abinnovision/gh-token-broker/internal/config"
 	"github.com/abinnovision/gh-token-broker/internal/perm"
+	"github.com/abinnovision/gh-token-broker/internal/resource"
 )
 
 // defaultBaseURL is GitHub's REST API base.
@@ -103,18 +104,30 @@ func loadPrivateKey(cfg config.GitHubAppConfig) ([]byte, error) {
 }
 
 // Mint resolves the installation for owner, verifies the installation's
-// granted permissions cover the request, and mints a scoped token. repos
-// are "owner/repo" names; every entry must share owner.
-//
-// The installation's real granted permissions are fetched at runtime. If any
-// requested permission exceeds the installation ceiling, Mint returns an
-// error rather than silently downgrading — a reduced token would cause
-// confusing failures at the call site.
-func (c *Client) Mint(ctx context.Context, owner string, repos []string, perms map[string]string) (ScopedToken, error) {
-	inst, err := c.resolveInstallation(ctx, owner)
+// granted permissions cover the request, and mints a token scoped according
+// to the resource kind. For repo-kind resources the token is scoped to
+// specific repositories; for org and enterprise kinds the token covers all
+// repositories visible to the installation.
+func (c *Client) Mint(ctx context.Context, owner string, resources []resource.Resource, perms map[string]string) (ScopedToken, error) {
+	if len(resources) == 0 {
+		return ScopedToken{}, fmt.Errorf("githubapp: no resources provided")
+	}
+	kind := resources[0].Kind
+
+	var inst *github.Installation
+	var err error
+	switch kind {
+	case resource.KindRepo, resource.KindOrg:
+		inst, err = c.resolveInstallation(ctx, owner)
+	case resource.KindEnterprise:
+		inst, err = c.resolveEnterpriseInstallation(ctx, owner)
+	default:
+		return ScopedToken{}, fmt.Errorf("githubapp: unsupported resource kind %q", kind)
+	}
 	if err != nil {
 		return ScopedToken{}, err
 	}
+
 	ceiling := permMap(inst.GetPermissions())
 	if gaps := perm.Gaps(perms, ceiling); gaps != nil {
 		msg := formatGaps(fmt.Sprintf("githubapp: installation for %q does not cover requested permissions:", owner), gaps)
@@ -122,18 +135,15 @@ func (c *Client) Mint(ctx context.Context, owner string, repos []string, perms m
 	}
 	finalPerms := perm.Intersect(perms, ceiling)
 
-	shortNames := make([]string, 0, len(repos))
-	for _, full := range repos {
-		o, name, ok := splitRepo(full)
-		if !ok {
-			return ScopedToken{}, fmt.Errorf("githubapp: invalid repository %q (want owner/repo)", full)
-		}
-		if !strings.EqualFold(o, owner) {
-			return ScopedToken{}, fmt.Errorf("githubapp: repository %q is not under owner %q", full, owner)
-		}
-		shortNames = append(shortNames, name)
+	switch kind {
+	case resource.KindRepo:
+		shortNames := resource.RepoShortNames(resources)
+		return c.MintScopedToken(ctx, inst.GetID(), shortNames, finalPerms)
+	case resource.KindOrg, resource.KindEnterprise:
+		return c.MintInstallationToken(ctx, inst.GetID(), finalPerms)
+	default:
+		return ScopedToken{}, fmt.Errorf("githubapp: unsupported resource kind %q", kind)
 	}
-	return c.MintScopedToken(ctx, inst.GetID(), shortNames, finalPerms)
 }
 
 // resolveInstallation finds the App installation for owner, trying the
@@ -147,6 +157,32 @@ func (c *Client) resolveInstallation(ctx context.Context, owner string) (*github
 		return nil, fmt.Errorf("githubapp: no installation found for owner %q: %w", owner, err)
 	}
 	return inst, nil
+}
+
+// resolveEnterpriseInstallation finds the App installation for an enterprise.
+func (c *Client) resolveEnterpriseInstallation(ctx context.Context, slug string) (*github.Installation, error) {
+	url := fmt.Sprintf("%s/enterprises/%s/installation", c.baseURL, slug)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("githubapp: build enterprise installation request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("githubapp: enterprise installation lookup: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return nil, fmt.Errorf("githubapp: no installation found for enterprise %q: %d %s", slug, resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	var inst github.Installation
+	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
+		return nil, fmt.Errorf("githubapp: decode enterprise installation: %w", err)
+	}
+	return &inst, nil
 }
 
 // tokenRequest is the POST body for the installation access-token endpoint.
@@ -217,6 +253,50 @@ func (c *Client) MintScopedToken(ctx context.Context, installationID int64, repo
 	}, nil
 }
 
+// MintInstallationToken mints an installation access token scoped to
+// permissions only, without restricting to specific repositories. The
+// resulting token covers all repositories the installation can access.
+// Used for org and enterprise resources.
+//
+// It refuses if perms is empty (returning ErrEmptyScope).
+func (c *Client) MintInstallationToken(ctx context.Context, installationID int64, perms map[string]string) (ScopedToken, error) {
+	if len(perms) == 0 {
+		return ScopedToken{}, ErrEmptyScope
+	}
+
+	body, err := json.Marshal(tokenRequest{Permissions: perms})
+	if err != nil {
+		return ScopedToken{}, fmt.Errorf("githubapp: encode token request: %w", err)
+	}
+	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", c.baseURL, installationID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return ScopedToken{}, fmt.Errorf("githubapp: build token request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return ScopedToken{}, fmt.Errorf("githubapp: mint token: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusCreated {
+		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		return ScopedToken{}, fmt.Errorf("githubapp: token endpoint returned %d: %s", resp.StatusCode, strings.TrimSpace(string(snippet)))
+	}
+	var tr tokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+		return ScopedToken{}, fmt.Errorf("githubapp: decode token response: %w", err)
+	}
+	return ScopedToken{
+		Token:       tr.Token,
+		ExpiresAt:   tr.ExpiresAt,
+		Permissions: tr.Permissions,
+	}, nil
+}
+
 // permMap converts a go-github InstallationPermissions struct to a
 // map[string]string by JSON round-trip. Nil (omitempty) fields drop out, so
 // the result contains exactly the permissions the installation actually grants.
@@ -273,12 +353,4 @@ func formatGaps(header string, gaps map[string]string) string {
 		fmt.Fprintf(&b, "\n  - %s: %s", k, gaps[k])
 	}
 	return b.String()
-}
-
-func splitRepo(full string) (owner, repo string, ok bool) {
-	parts := strings.SplitN(full, "/", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", false
-	}
-	return parts[0], parts[1], true
 }

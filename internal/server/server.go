@@ -21,6 +21,7 @@ import (
 	"github.com/abinnovision/gh-token-broker/internal/githubapp"
 	"github.com/abinnovision/gh-token-broker/internal/perm"
 	"github.com/abinnovision/gh-token-broker/internal/policy"
+	"github.com/abinnovision/gh-token-broker/internal/resource"
 )
 
 const maxBodyBytes = 1 << 20
@@ -47,7 +48,7 @@ type Authenticator interface {
 // Minter resolves the installation for owner and mints a scoped token for the
 // given repositories and permissions. Implemented by *githubapp.Client.
 type Minter interface {
-	Mint(ctx context.Context, owner string, repos []string, perms map[string]string) (githubapp.ScopedToken, error)
+	Mint(ctx context.Context, owner string, resources []resource.Resource, perms map[string]string) (githubapp.ScopedToken, error)
 }
 
 // Server holds the wired dependencies for the HTTP handlers.
@@ -203,16 +204,12 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	repositories := form["resource"]
-	if len(repositories) == 0 {
-		writeOAuthError(w, http.StatusBadRequest, errInvalidTarget, "resource is required (one owner/repo value per repository)")
+	resources, err := resource.ParseAll(form["resource"])
+	if err != nil {
+		writeOAuthError(w, http.StatusBadRequest, errInvalidTarget, err.Error())
 		return
 	}
-	owner, ok := singleOwner(repositories)
-	if !ok {
-		writeOAuthError(w, http.StatusBadRequest, errInvalidTarget, "all resource values must be owner/repo and share one owner")
-		return
-	}
+	owner := resource.Owner(resources)
 	// audience, if present, is not validated against owner: resource is the
 	// sole source of truth for the target scope, and RFC 8693 does not
 	// require audience to match it. Some clients (e.g. oidc-token-cli) reuse
@@ -227,7 +224,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	decision, err := s.engine.Evaluate(policy.Input{
 		Caller:  policyCaller(id),
-		Request: policy.Request{Repositories: repositories},
+		Request: policy.Request{Resources: resource.RawStrings(resources)},
 	}, policy.Scope{Permissions: perms})
 	if err != nil {
 		// Oversized request.repositories is rejected, not truncated.
@@ -240,7 +237,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := s.minter.Mint(r.Context(), owner, repositories, perms)
+	token, err := s.minter.Mint(r.Context(), owner, resources, perms)
 	if err != nil {
 		if errors.Is(err, githubapp.ErrEmptyScope) {
 			s.auditDeny("token", id, decision, "empty computed scope")
@@ -263,7 +260,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		Caller:          id.PolicyClaims(),
 		MatchedPolicies: decision.MatchedPolicies,
 		SkippedPolicies: decision.SkippedPolicies,
-		RequestedScope:  map[string]any{"repositories": repositories, "permissions": perms},
+		RequestedScope:  map[string]any{"resources": resource.RawStrings(resources), "permissions": perms},
 		ComputedScope:   map[string]any{"repositories": token.Repositories, "permissions": token.Permissions},
 		TokenIssued:     true,
 	})
@@ -351,25 +348,6 @@ func denyReason(decision policy.Decision) string {
 		return "no matching policies"
 	}
 	return "combined policy permissions do not cover requested scope"
-}
-
-func singleOwner(repos []string) (string, bool) {
-	owner := ""
-	for _, full := range repos {
-		parts := strings.SplitN(full, "/", 2)
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return "", false
-		}
-		if owner == "" {
-			owner = parts[0]
-		} else if owner != parts[0] {
-			return "", false
-		}
-	}
-	if owner == "" {
-		return "", false
-	}
-	return owner, true
 }
 
 func policyCaller(id *auth.Identity) policy.Caller {

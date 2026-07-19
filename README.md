@@ -51,7 +51,7 @@ githubApp:
 
 policies:
   - name: acme-ci
-    condition: 'caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")'
+    condition: 'caller.repository == "acme/app" && request.resources.all(r, r == "repo:acme/app")'
     grant:
       permissions:
         contents: read
@@ -59,13 +59,56 @@ policies:
 
 Use exactly one of `githubApp.privateKeyPath` and `githubApp.privateKeyEnv`.
 
+## Request syntax
+
+### Resources
+
+The `resource` form field identifies what the token should grant access to. Each
+value uses a typed prefix:
+
+| Format | Description | Example |
+| ------ | ----------- | ------- |
+| `repo:owner/name` | A specific repository. | `repo:acme/app` |
+| `org:name` | All repositories in an organization. | `org:acme` |
+| `enterprise:slug` | Enterprise-level access. | `enterprise:acme-llc` |
+| `owner/repo` | Shorthand for `repo:owner/repo` (backward compat). | `acme/app` |
+
+**Constraints per request:**
+
+- All resources must share the same **type** (no mixing `repo:` with `org:`).
+- All resources must share the same **owner** (resolves to one installation).
+- Only one `org:` or `enterprise:` value per request.
+- Multiple `repo:` values are allowed.
+
+For `repo:` resources the resulting token is scoped to those specific
+repositories. For `org:` and `enterprise:` resources the token covers all
+repositories visible to the GitHub App installation.
+
+### Scope
+
+The `scope` form field is a space-delimited list of `permission:level` tokens
+describing the access the caller needs:
+
+```
+contents:read issues:write
+```
+
+Each permission key must exist in the
+[permission catalog](./internal/perm/catalog_gen.go) (generated from the GitHub
+REST API OpenAPI spec). Most keys support levels `read` and `write`; a few
+support `admin`.
+
+The broker grants the **intersection** of the requested scope and the GitHub App
+installation's actual permissions -- it never silently downgrades, returning an
+error instead if the installation does not cover the request.
+
 ## Policies
 
 Policies are additive allow rules evaluated in no guaranteed order. The broker evaluates every policy condition and merges matching grants, using the highest permission level per key (`read < write < admin`).
 
 **Key rules:**
 
-- Each condition must authorize all requested repositories (`request.repositories`).
+- Each condition must authorize all requested resources (`request.resources`).
 - A request succeeds only when combined grants fully cover the requested scope.
 - The broker mints a token scoped to exactly what was requested.
 - `grant.permissions` is required and static. See [`internal/perm/catalog_gen.go`](./internal/perm/catalog_gen.go) for supported keys and levels (generated from the GitHub REST API OpenAPI spec).
@@ -89,20 +132,26 @@ Conditions receive two variables. Unknown fields fail compilation at startup.
 
 | Field | Type | Description |
 | ----- | ---- | ----------- |
-| `request.repositories` | `list(string)` | Target repositories for the token. |
+| `request.resources` | `list(string)` | Target resources, prefixed (e.g. `"repo:acme/app"`, `"org:acme"`). |
 
 ### Examples
 
 Token scoped to the caller's own repository:
 
 ```cel
-caller.repository == "acme/app" && request.repositories.all(r, r == "acme/app")
+caller.repository == "acme/app" && request.resources.all(r, r == "repo:acme/app")
 ```
 
 Token scoped to the caller's `-gitops` sibling:
 
 ```cel
-request.repositories.all(r, r == caller.repository + "-gitops")
+request.resources.all(r, r == "repo:" + caller.repository + "-gitops")
+```
+
+Organization-wide read access for the caller's own org:
+
+```cel
+request.resources.all(r, r == "org:" + caller.repository_owner)
 ```
 
 ## Run
@@ -142,7 +191,7 @@ jobs:
             --grant-type token-exchange \
             --subject-token-source github-actions \
             --audience gh-token-broker \
-            --resource acme/app \
+            --resource repo:acme/app \
             --scope "contents:read")
 ```
 
@@ -150,8 +199,9 @@ jobs:
 also sent as the RFC 8693 `audience` parameter, which the broker accepts but
 does not validate against `--resource`). `--client-id` is unchecked by the
 broker (`token_endpoint_auth_methods_supported` is `"none"`), so any
-placeholder works. `--resource` is repeatable for multiple repositories, and
-they must share one owner.
+placeholder works. `--resource` is repeatable for multiple repositories and accepts the
+prefixed forms described above (`repo:`, `org:`, `enterprise:`). All
+values must share one type and owner.
 
 ## API
 

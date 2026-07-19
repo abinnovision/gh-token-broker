@@ -30,8 +30,8 @@ func caller(repository, owner string) policy.Caller {
 	return policy.Caller{Repository: repository, RepositoryOwner: owner}
 }
 
-func input(c policy.Caller, repositories ...string) policy.Input {
-	return policy.Input{Caller: c, Request: policy.Request{Repositories: repositories}}
+func input(c policy.Caller, resources ...string) policy.Input {
+	return policy.Input{Caller: c, Request: policy.Request{Resources: resources}}
 }
 
 func scope(permissions map[string]string) policy.Scope {
@@ -43,7 +43,7 @@ func TestDefaultRejectWhenNoPolicyMatches(t *testing.T) {
 		Name: "owner", Condition: `caller.repository_owner == "acme"`,
 		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}}})
-	d, err := e.Evaluate(input(caller("acme/app", "someone-else"), "acme/app"), scope(map[string]string{"contents": "read"}))
+	d, err := e.Evaluate(input(caller("acme/app", "someone-else"), "repo:acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,12 +60,12 @@ func TestMatchingPoliciesCombinePermissionsRegardlessOfOrder(t *testing.T) {
 	required := scope(map[string]string{"contents": "write"})
 
 	forward, err := mustEngine(t, &config.Config{Policies: policies}).
-		Evaluate(input(caller("acme/app", "acme"), "acme/app"), required)
+		Evaluate(input(caller("acme/app", "acme"), "repo:acme/app"), required)
 	if err != nil {
 		t.Fatal(err)
 	}
 	backward, err := mustEngine(t, &config.Config{Policies: []config.Policy{policies[1], policies[0]}}).
-		Evaluate(input(caller("acme/app", "acme"), "acme/app"), required)
+		Evaluate(input(caller("acme/app", "acme"), "repo:acme/app"), required)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestCombinedPoliciesMustFullyCoverPermissions(t *testing.T) {
 		scope(map[string]string{"contents": "write"}),
 		scope(map[string]string{"issues": "read"}),
 	} {
-		d, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), required)
+		d, err := e.Evaluate(input(caller("acme/app", "acme"), "repo:acme/app"), required)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,17 +99,32 @@ func TestCombinedPoliciesMustFullyCoverPermissions(t *testing.T) {
 func TestConditionMustAuthorizeRequestedRepositories(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{{
 		Name:      "own-repository",
-		Condition: `request.repositories.all(r, r == caller.repository)`,
+		Condition: `request.resources.all(r, r == "repo:" + caller.repository)`,
 		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}}})
-	for _, repositories := range [][]string{{"acme/app"}, {"acme/other"}} {
-		d, err := e.Evaluate(input(caller("acme/app", "acme"), repositories...), scope(map[string]string{"contents": "read"}))
+	for _, resources := range [][]string{{"repo:acme/app"}, {"repo:acme/other"}} {
+		d, err := e.Evaluate(input(caller("acme/app", "acme"), resources...), scope(map[string]string{"contents": "read"}))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if d.Allowed != (repositories[0] == "acme/app") {
-			t.Fatalf("repository authorization must come from condition: repositories=%v decision=%+v", repositories, d)
+		if d.Allowed != (resources[0] == "repo:acme/app") {
+			t.Fatalf("repository authorization must come from condition: resources=%v decision=%+v", resources, d)
 		}
+	}
+}
+
+func TestConditionMustAuthorizeOrgKindResources(t *testing.T) {
+	e := mustEngine(t, &config.Config{Policies: []config.Policy{{
+		Name:      "own-org",
+		Condition: `request.resources.all(r, r == "org:acme")`,
+		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
+	}}})
+	d, err := e.Evaluate(input(caller("acme/app", "acme"), "org:acme"), scope(map[string]string{"contents": "read"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d.Allowed {
+		t.Fatalf("org-kind resource must match condition: %+v", d)
 	}
 }
 
@@ -118,7 +133,7 @@ func TestRuntimeEvaluationErrorIsSkipped(t *testing.T) {
 		{Name: "broken-at-runtime", Condition: "1 / 0 == 0", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
 		{Name: "allow", Condition: "true", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
 	}})
-	d, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), scope(map[string]string{"contents": "read"}))
+	d, err := e.Evaluate(input(caller("acme/app", "acme"), "repo:acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +170,7 @@ func TestCostLimitTripsAndIsSkipped(t *testing.T) {
 			Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 		}},
 	})
-	d, err := e.Evaluate(input(caller("acme/app", "acme"), "acme/app"), scope(map[string]string{"contents": "read"}))
+	d, err := e.Evaluate(input(caller("acme/app", "acme"), "repo:acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,7 +187,7 @@ func TestOversizedRepositoriesRejectedBeforeEvaluation(t *testing.T) {
 			Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 		}},
 	})
-	_, err := e.Evaluate(input(caller("acme/app", "acme"), "a/1", "a/2", "a/3"), scope(map[string]string{"contents": "read"}))
+	_, err := e.Evaluate(input(caller("acme/app", "acme"), "repo:a/1", "repo:a/2", "repo:a/3"), scope(map[string]string{"contents": "read"}))
 	if err == nil {
 		t.Fatal("oversized repositories list must be rejected, not truncated")
 	}

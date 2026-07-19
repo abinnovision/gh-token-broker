@@ -36,7 +36,7 @@ type Caller struct {
 
 // Request is the normalized request context exposed to CEL.
 type Request struct {
-	Repositories []string `cel:"repositories"`
+	Resources []string `cel:"resources"`
 }
 
 // Decision is the outcome of evaluating one request against every policy.
@@ -123,10 +123,10 @@ func compile(env *cel.Env, policy, expr string, costLimit uint64) (cel.Program, 
 // logged and skipped; no matching policy denies by default.
 //
 // It returns a non-nil error only for an operational rejection that must not
-// be silently absorbed — specifically an oversized request.repositories list,
+// be silently absorbed — specifically an oversized request.resources list,
 // which must be rejected outright, never truncated.
 func (e *Engine) Evaluate(in Input, required Scope) (Decision, error) {
-	if err := e.checkListCaps(in.Request.Repositories); err != nil {
+	if err := e.checkListCaps(in.Request); err != nil {
 		return Decision{}, err
 	}
 
@@ -172,13 +172,13 @@ func coversPermissions(required, granted map[string]string) bool {
 	return perm.Satisfies(required, granted)
 }
 
-// checkListCaps enforces the request.repositories cap before the list is
+// checkListCaps enforces the request.resources cap before the list is
 // bound as a CEL activation value. Oversized lists are rejected, never
 // truncated.
-func (e *Engine) checkListCaps(repositories []string) error {
-	if len(repositories) > e.maxRepositories {
-		return fmt.Errorf("request.repositories has %d entries, exceeds cap of %d",
-			len(repositories), e.maxRepositories)
+func (e *Engine) checkListCaps(req Request) error {
+	if len(req.Resources) > e.maxRepositories {
+		return fmt.Errorf("request.resources has %d entries, exceeds cap of %d",
+			len(req.Resources), e.maxRepositories)
 	}
 	return nil
 }
