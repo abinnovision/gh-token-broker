@@ -1,6 +1,8 @@
 # gh-token-broker
 
-Mints least-privilege GitHub App installation tokens for GitHub Actions workflows, gated by CEL policies.
+An OAuth 2.0 Security Token Service (STS) that mints least-privilege GitHub App
+installation tokens for GitHub Actions workflows, gated by CEL policies.
+Implements [RFC 8693 Token Exchange](https://datatracker.ietf.org/doc/html/rfc8693).
 
 ## How it works
 
@@ -125,8 +127,8 @@ they must share one owner.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /token` | Token exchange -- accepts `subject_token` form field (OIDC ID token), returns a scoped installation token. |
-| `GET /.well-known/oauth-authorization-server` | RFC 8414 authorization server metadata. |
-| `GET /.well-known/openid-configuration` | OIDC Discovery metadata (same document). |
-| `GET /healthz` | Liveness probe. |
-| `GET /openapi.json` | OpenAPI document. |
+| `POST /token` | RFC 8693 token exchange. |
+| `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata discovery. |
+| `GET /.well-known/openid-configuration` | Alias of the above for client compatibility. |
+
+Full schema available at `GET /openapi.json`.
