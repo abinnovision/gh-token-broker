@@ -38,7 +38,6 @@ func TestParse(t *testing.T) {
 		}
 
 		for _, tc := range cases {
-			tc := tc
 			t.Run(tc.name, func(t *testing.T) {
 				t.Parallel()
 
@@ -67,7 +66,6 @@ func TestParse(t *testing.T) {
 		}
 
 		for _, input := range invalid {
-			input := input
 			t.Run(input, func(t *testing.T) {
 				t.Parallel()
 

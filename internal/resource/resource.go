@@ -116,13 +116,10 @@ func splitPrefix(raw string) (prefix string, remainder string, ok bool) {
 // splitOwnerName splits a "owner/name" remainder, requiring both parts to be
 // non-empty.
 func splitOwnerName(remainder string) (owner string, name string, err error) {
-	idx := strings.Index(remainder, "/")
-	if idx < 0 {
+	owner, name, ok := strings.Cut(remainder, "/")
+	if !ok {
 		return "", "", fmt.Errorf("expected owner/name form")
 	}
-
-	owner = remainder[:idx]
-	name = remainder[idx+1:]
 
 	if owner == "" || name == "" {
 		return "", "", fmt.Errorf("owner and name must not be empty")
