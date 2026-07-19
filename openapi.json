@@ -63,6 +63,24 @@
         }
       }
     },
+    "/.well-known/openid-configuration": {
+      "get": {
+        "summary": "OpenID Connect Discovery metadata (alias)",
+        "description": "Serves the same metadata document as /.well-known/oauth-authorization-server for clients that only support OIDC Discovery.",
+        "operationId": "openidConfiguration",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Metadata document",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/AuthorizationServerMetadata" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/healthz": {
       "get": {
         "summary": "Liveness check",
