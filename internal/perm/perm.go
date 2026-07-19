@@ -5,6 +5,7 @@
 package perm
 
 //go:generate bash -c "../../scripts/gen-catalog.sh > catalog_gen.go"
+//go:generate go run ../../cmd/gen-schema
 
 import "fmt"
 

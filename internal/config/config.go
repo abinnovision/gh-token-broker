@@ -18,49 +18,45 @@ import (
 // Config is the top-level proxy configuration.
 type Config struct {
 	Server    ServerConfig    `yaml:"server"`
-	OIDC      OIDCConfig      `yaml:"oidc"`
-	GitHubApp GitHubAppConfig `yaml:"githubApp"`
+	OIDC      OIDCConfig      `yaml:"oidc" jsonschema:"required"`
+	GitHubApp GitHubAppConfig `yaml:"githubApp" jsonschema:"required"`
 	Policy    PolicyConfig    `yaml:"policy"`
 	Policies  []Policy        `yaml:"policies"`
 }
 
 type ServerConfig struct {
-	Bind   string `yaml:"bind"`
-	Issuer string `yaml:"issuer"`
+	Bind   string `yaml:"bind" jsonschema:"default=:8080"`
+	Issuer string `yaml:"issuer" jsonschema:"description=The broker's own OAuth issuer identifier — a stable absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint."`
 }
 
 type OIDCConfig struct {
-	Issuer           string `yaml:"issuer"`
-	Audience         string `yaml:"audience"`
-	ClockSkewSeconds int    `yaml:"clockSkewSeconds"`
+	Issuer           string `yaml:"issuer" jsonschema:"default=https://token.actions.githubusercontent.com"`
+	Audience         string `yaml:"audience" jsonschema:"required,minLength=1,description=REQUIRED proxy-specific OIDC audience; tokens whose aud does not match exactly are rejected"`
+	ClockSkewSeconds int    `yaml:"clockSkewSeconds" jsonschema:"default=60,minimum=0"`
 }
 
-// GitHubAppConfig references the App private key by file path or environment
-// variable name — never by raw PEM content in YAML, so key material never
-// lands in the config file or logs.
 type GitHubAppConfig struct {
-	AppID          int64  `yaml:"appId"`
-	PrivateKeyPath string `yaml:"privateKeyPath"`
-	PrivateKeyEnv  string `yaml:"privateKeyEnv"`
+	AppID          int64  `yaml:"appId" jsonschema:"required,minimum=1"`
+	PrivateKeyPath string `yaml:"privateKeyPath" jsonschema:"minLength=1,description=Path to the App private key PEM file. Never put raw key material in this YAML."`
+	PrivateKeyEnv  string `yaml:"privateKeyEnv" jsonschema:"minLength=1,description=Name of an environment variable holding the App private key PEM."`
 }
 
 type PolicyConfig struct {
-	CostLimit       uint64 `yaml:"costLimit"`
-	MaxRepositories int    `yaml:"maxRepositories"`
+	CostLimit       uint64 `yaml:"costLimit" jsonschema:"default=10000,minimum=1"`
+	MaxRepositories int    `yaml:"maxRepositories" jsonschema:"default=256,minimum=1"`
 }
 
-// Policy is one independent allow policy. Only Condition is a CEL expression;
-// Grant is static operator-authored config data. CEL only decides whether the
-// operator's pre-declared grant contributes to an authorization — it can
-// never fabricate a novel grant from request data.
 type Policy struct {
-	Name      string `yaml:"name"`
-	Condition string `yaml:"condition"`
-	Grant     Grant  `yaml:"grant"`
+	Name      string `yaml:"name" jsonschema:"required,minLength=1"`
+	Condition string `yaml:"condition" jsonschema:"required,minLength=1,description=CEL expression evaluating to bool; the condition under which a policy contributes its grant"`
+	Grant     Grant  `yaml:"grant" jsonschema:"required"`
 }
+
+// Permissions maps canonical GitHub App permission keys to their granted level.
+type Permissions map[string]string
 
 type Grant struct {
-	Permissions map[string]string `yaml:"permissions"`
+	Permissions Permissions `yaml:"permissions" jsonschema:"required"`
 }
 
 // Load reads, schema-validates, and decodes the YAML config at path, applies
