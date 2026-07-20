@@ -172,10 +172,10 @@ match `oidc.audience` in the broker configuration.
 
 ### Request a scoped token
 
-The easiest way to call the broker from a workflow is
-[`oidc-token-cli`](https://github.com/abinnovision/oidc-token-cli), which
-fetches the GitHub Actions OIDC token and performs the exchange in one step.
-Install it with `brew install abinnovision/tap/oidc-token`.
+The easiest way to call the broker from a workflow is the
+[`exchange-github-token`](https://github.com/abinnovision/actions/tree/main/actions/exchange-github-token)
+action. It installs [`oidc-token-cli`](https://github.com/abinnovision/oidc-token-cli),
+mints the GitHub Actions OIDC token, and performs the RFC 8693 exchange in one step.
 
 ```yaml
 jobs:
@@ -184,24 +184,29 @@ jobs:
     permissions:
       id-token: write
     steps:
-      - run: |
-          TOKEN=$(oidc-token \
-            --issuer https://<broker-host>/ \
-            --client-id gh-token-broker \
-            --grant-type token-exchange \
-            --subject-token-source github-actions \
-            --audience gh-token-broker \
-            --resource repo:acme/app \
-            --scope "contents:read")
+      - name: Exchange GitHub token
+        id: token
+        uses: abinnovision/actions@exchange-github-token-v1
+        with:
+          broker-url: https://<broker-host>/
+          scope: "contents:read"
+          resources: repo:acme/app # optional; defaults to the current repo
+      - name: Use the token
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: gh release list
 ```
 
-`--audience` must match `oidc.audience` in the broker configuration (it's
-also sent as the RFC 8693 `audience` parameter, which the broker accepts but
-does not validate against `--resource`). `--client-id` is unchecked by the
-broker (`token_endpoint_auth_methods_supported` is `"none"`), so any
-placeholder works. `--resource` is repeatable for multiple repositories and accepts the
-prefixed forms described above (`repo:`, `org:`, `enterprise:`). All
-values must share one type and owner.
+`resources` accepts the typed prefixes documented above (`repo:owner/name`,
+`org:name`, `enterprise:slug`) and defaults to the current repository. See the
+[action's README](https://github.com/abinnovision/actions/tree/main/actions/exchange-github-token)
+for the full set of inputs and outputs, including the `committer-name` and
+`committer-email` outputs for attributing automated commits to the App bot.
+
+For lower-level or non-Actions use, call
+[`oidc-token-cli`](https://github.com/abinnovision/oidc-token-cli) directly (the
+[`setup-oidc-token-cli`](https://github.com/abinnovision/actions/tree/main/actions/setup-oidc-token-cli)
+action installs it with runner caching).
 
 ## API
 
