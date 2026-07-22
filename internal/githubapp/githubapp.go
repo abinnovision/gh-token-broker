@@ -65,12 +65,13 @@ type AppIdentity struct {
 // Client mints scoped tokens using the App's JWT. It is safe for concurrent
 // use.
 type Client struct {
-	appID       int64
-	apps        *github.Client // authenticated with the App JWT
-	httpClient  *http.Client   // App-JWT client used for the raw token POST
-	baseURL     string
-	logger      *slog.Logger
-	appIdentity AppIdentity
+	appID        int64
+	apps         *github.Client // authenticated with the App JWT
+	httpClient   *http.Client   // App-JWT client used for the raw token POST
+	publicClient *http.Client   // unauthenticated client for public REST endpoints
+	baseURL      string
+	logger       *slog.Logger
+	appIdentity  AppIdentity
 }
 
 // New builds a Client from the App config, loading the private key from the
@@ -87,11 +88,12 @@ func New(cfg config.GitHubAppConfig, logger *slog.Logger) (*Client, error) {
 	}
 	httpClient := &http.Client{Transport: appsTransport, Timeout: 30 * time.Second}
 	return &Client{
-		appID:      cfg.AppID,
-		apps:       github.NewClient(httpClient),
-		httpClient: httpClient,
-		baseURL:    defaultBaseURL,
-		logger:     logger,
+		appID:        cfg.AppID,
+		apps:         github.NewClient(httpClient),
+		httpClient:   httpClient,
+		publicClient: &http.Client{Timeout: 30 * time.Second},
+		baseURL:      defaultBaseURL,
+		logger:       logger,
 	}, nil
 }
 
@@ -344,7 +346,10 @@ func (c *Client) FetchAppIdentity(ctx context.Context) (AppIdentity, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 
-	resp, err := c.httpClient.Do(req)
+	// The /users/{username} endpoint is a public REST endpoint that rejects the
+	// App JWT with 401 Bad credentials. Use the unauthenticated client so the
+	// bot-user lookup is not sent with App-JWT credentials.
+	resp, err := c.publicClient.Do(req)
 	if err != nil {
 		return AppIdentity{}, fmt.Errorf("githubapp: fetch bot user: %w", err)
 	}
