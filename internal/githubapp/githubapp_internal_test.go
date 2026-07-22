@@ -13,8 +13,21 @@ import (
 	"github.com/google/go-github/v66/github"
 )
 
+// authInjector wraps a RoundTripper and stamps an Authorization header on every
+// request, mimicking ghinstallation's AppsTransport for tests.
+type authInjector struct{ base http.RoundTripper }
+
+func (a authInjector) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := a.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	req.Header.Set("Authorization", "Bearer test-jwt")
+	return base.RoundTrip(req)
+}
+
 func testClient(baseURL string, hc *http.Client) *Client {
-	return &Client{baseURL: baseURL, httpClient: hc, logger: slog.New(slog.DiscardHandler)}
+	return &Client{baseURL: baseURL, httpClient: hc, publicClient: hc, logger: slog.New(slog.DiscardHandler)}
 }
 
 // TestMintScopedTokenFailsClosedOnEmptyScope proves INV-1: an empty computed
@@ -290,6 +303,11 @@ func TestFetchAppIdentity(t *testing.T) {
 		case "/app":
 			_, _ = w.Write([]byte(`{"slug": "test-app", "permissions": {}}`))
 		case "/users/test-app[bot]":
+			// The public user endpoint must not receive the App JWT; sending
+			// one causes GitHub to reject the request with 401 Bad credentials.
+			if auth := r.Header.Get("Authorization"); auth != "" {
+				t.Errorf("bot user request carried Authorization header %q, want none", auth)
+			}
 			_, _ = w.Write([]byte(`{"id": 12345}`))
 		default:
 			t.Errorf("unexpected path %s", r.URL.Path)
@@ -297,7 +315,13 @@ func TestFetchAppIdentity(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	c := testClientWithApps(srv.URL, srv.Client())
+
+	// httpClient injects an App-JWT-style Authorization header (like the real
+	// AppsTransport); publicClient stays unauthenticated. This proves the
+	// bot-user lookup goes through publicClient: if it regressed to httpClient,
+	// the /users handler above would see the header and fail the test.
+	c := testClientWithApps(srv.URL, &http.Client{Transport: authInjector{srv.Client().Transport}})
+	c.publicClient = srv.Client()
 
 	identity, err := c.FetchAppIdentity(context.Background())
 	if err != nil {
