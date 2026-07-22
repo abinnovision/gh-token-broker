@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.1](https://github.com/abinnovision/gh-token-broker/compare/v0.6.0...v0.6.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* **githubapp:** fetch bot user without app JWT to avoid bad credentials ([#26](https://github.com/abinnovision/gh-token-broker/issues/26)) ([a65e5fc](https://github.com/abinnovision/gh-token-broker/commit/a65e5fc500624f607e8542558e33f586ea0f3f0e))
+
 ## [0.6.0](https://github.com/abinnovision/gh-token-broker/compare/v0.5.0...v0.6.0) (2026-07-19)
 
 
