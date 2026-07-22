@@ -302,11 +302,18 @@ func TestFetchAppIdentity(t *testing.T) {
 		switch r.URL.Path {
 		case "/app":
 			_, _ = w.Write([]byte(`{"slug": "test-app", "permissions": {}}`))
+		case "/app/installations":
+			_, _ = w.Write([]byte(`[{"id": 99}]`))
+		case "/app/installations/99/access_tokens":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"token": "ghs_identitytoken", "expires_at": "2099-01-01T00:00:00Z"}`))
 		case "/users/test-app[bot]":
-			// The public user endpoint must not receive the App JWT; sending
-			// one causes GitHub to reject the request with 401 Bad credentials.
-			if auth := r.Header.Get("Authorization"); auth != "" {
-				t.Errorf("bot user request carried Authorization header %q, want none", auth)
+			// The bot-user lookup must carry the minted installation token, not
+			// the App JWT (which /users rejects with 401 Bad credentials). If it
+			// regressed to the JWT client, AppsTransport would overwrite this
+			// header with the JWT and the assertion below would fail.
+			if got := r.Header.Get("Authorization"); got != "Bearer ghs_identitytoken" {
+				t.Errorf("bot user request Authorization = %q, want %q", got, "Bearer ghs_identitytoken")
 			}
 			_, _ = w.Write([]byte(`{"id": 12345}`))
 		default:
@@ -317,9 +324,10 @@ func TestFetchAppIdentity(t *testing.T) {
 	defer srv.Close()
 
 	// httpClient injects an App-JWT-style Authorization header (like the real
-	// AppsTransport); publicClient stays unauthenticated. This proves the
-	// bot-user lookup goes through publicClient: if it regressed to httpClient,
-	// the /users handler above would see the header and fail the test.
+	// AppsTransport); publicClient carries no such transport. This proves the
+	// bot-user lookup goes through publicClient with the installation token: if
+	// it regressed to httpClient, the JWT would overwrite the header and the
+	// /users handler above would fail the test.
 	c := testClientWithApps(srv.URL, &http.Client{Transport: authInjector{srv.Client().Transport}})
 	c.publicClient = srv.Client()
 

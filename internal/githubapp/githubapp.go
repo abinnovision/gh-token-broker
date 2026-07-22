@@ -68,7 +68,7 @@ type Client struct {
 	appID        int64
 	apps         *github.Client // authenticated with the App JWT
 	httpClient   *http.Client   // App-JWT client used for the raw token POST
-	publicClient *http.Client   // unauthenticated client for public REST endpoints
+	publicClient *http.Client   // no-JWT client for requests that set their own Authorization
 	baseURL      string
 	logger       *slog.Logger
 	appIdentity  AppIdentity
@@ -339,16 +339,26 @@ func (c *Client) FetchAppIdentity(ctx context.Context) (AppIdentity, error) {
 	}
 	slug := app.GetSlug()
 
+	// The bot user's numeric ID is only exposed by GET /users/{username}, which
+	// rejects the App JWT (401 Bad credentials) and rate-limits unauthenticated
+	// callers to 60/hour per IP (403 rate limit exceeded). Mint a least-privilege
+	// installation token and present it so the lookup uses the authenticated
+	// 5000/hour rate limit.
+	token, err := c.identityToken(ctx)
+	if err != nil {
+		return AppIdentity{}, err
+	}
+
 	url := c.baseURL + "/users/" + slug + "%5Bbot%5D"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return AppIdentity{}, fmt.Errorf("githubapp: build bot user request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
 
-	// The /users/{username} endpoint is a public REST endpoint that rejects the
-	// App JWT with 401 Bad credentials. Use the unauthenticated client so the
-	// bot-user lookup is not sent with App-JWT credentials.
+	// publicClient carries no JWT transport, so the installation-token
+	// Authorization header set above reaches GitHub unchanged.
 	resp, err := c.publicClient.Do(req)
 	if err != nil {
 		return AppIdentity{}, fmt.Errorf("githubapp: fetch bot user: %w", err)
@@ -374,6 +384,27 @@ func (c *Client) FetchAppIdentity(ctx context.Context) (AppIdentity, error) {
 	}
 	c.appIdentity = identity
 	return identity, nil
+}
+
+// identityToken mints a least-privilege (metadata:read) installation access
+// token used solely to authenticate the public bot-user lookup, so that lookup
+// benefits from the authenticated rate limit instead of the low per-IP
+// unauthenticated one. It uses the App's first installation; metadata:read is
+// granted to every installation, so minting never fails on the permission
+// ceiling.
+func (c *Client) identityToken(ctx context.Context) (string, error) {
+	insts, _, err := c.apps.Apps.ListInstallations(ctx, &github.ListOptions{PerPage: 1})
+	if err != nil {
+		return "", fmt.Errorf("githubapp: list installations: %w", err)
+	}
+	if len(insts) == 0 {
+		return "", fmt.Errorf("githubapp: no installations found to authenticate bot user lookup")
+	}
+	token, err := c.MintInstallationToken(ctx, insts[0].GetID(), map[string]string{"metadata": "read"})
+	if err != nil {
+		return "", fmt.Errorf("githubapp: mint identity token: %w", err)
+	}
+	return token.Token, nil
 }
 
 // AppIdentity returns the App's bot identity, as fetched by FetchAppIdentity.
