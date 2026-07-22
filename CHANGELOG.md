@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.2](https://github.com/abinnovision/gh-token-broker/compare/v0.6.1...v0.6.2) (2026-07-22)
+
+
+### Bug Fixes
+
+* **githubapp:** authenticate bot user lookup with installation token ([#28](https://github.com/abinnovision/gh-token-broker/issues/28)) ([393ba00](https://github.com/abinnovision/gh-token-broker/commit/393ba00f0b054c37dc943a1cac9059f45c8500dc))
+
 ## [0.6.1](https://github.com/abinnovision/gh-token-broker/compare/v0.6.0...v0.6.1) (2026-07-22)
 
 
