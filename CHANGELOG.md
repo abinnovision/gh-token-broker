@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.3](https://github.com/abinnovision/gh-token-broker/compare/v0.6.2...v0.6.3) (2026-09-29)
+
+
+### Bug Fixes
+
+* **perm:** include GitHub docs permission data in catalog ([#30](https://github.com/abinnovision/gh-token-broker/issues/30)) ([48de84c](https://github.com/abinnovision/gh-token-broker/commit/48de84cbdb305a1e1001d6cc07c87281266909b5))
+
 ## [0.6.2](https://github.com/abinnovision/gh-token-broker/compare/v0.6.1...v0.6.2) (2026-07-22)
 
 
