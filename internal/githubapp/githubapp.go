@@ -13,13 +13,14 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/bradleyfalzon/ghinstallation/v2"
-	"github.com/google/go-github/v66/github"
+	"github.com/google/go-github/v92/github"
 
 	"github.com/abinnovision/gh-token-broker/internal/config"
 	"github.com/abinnovision/gh-token-broker/internal/perm"
@@ -28,6 +29,25 @@ import (
 
 // defaultBaseURL is GitHub's REST API base.
 const defaultBaseURL = "https://api.github.com"
+
+// apiVersion is the GitHub REST API version sent on every request.
+const apiVersion = "2026-03-10"
+
+// apiVersionTransport sets the X-GitHub-Api-Version header on every request.
+type apiVersionTransport struct{ base http.RoundTripper }
+
+func (t apiVersionTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req = req.Clone(req.Context())
+	req.Header.Set("X-GitHub-Api-Version", apiVersion)
+	return t.base.RoundTrip(req)
+}
+
+// installation is the subset of an installation response we consume.
+// Permissions is decoded as a raw map so keys unknown to go-github survive.
+type installation struct {
+	ID          int64             `json:"id"`
+	Permissions map[string]string `json:"permissions"`
+}
 
 // ErrEmptyScope is returned by MintScopedToken when the computed scope is
 // empty. GitHub treats an absent repository/permission set as "all repos"/"all
@@ -82,16 +102,21 @@ func New(cfg config.GitHubAppConfig, logger *slog.Logger) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	appsTransport, err := ghinstallation.NewAppsTransport(http.DefaultTransport, cfg.AppID, pem)
+	base := apiVersionTransport{base: http.DefaultTransport}
+	appsTransport, err := ghinstallation.NewAppsTransport(base, cfg.AppID, pem)
 	if err != nil {
 		return nil, fmt.Errorf("githubapp: build app transport: %w", err)
 	}
 	httpClient := &http.Client{Transport: appsTransport, Timeout: 30 * time.Second}
+	apps, err := github.NewClient(github.WithHTTPClient(httpClient))
+	if err != nil {
+		return nil, fmt.Errorf("githubapp: build github client: %w", err)
+	}
 	return &Client{
 		appID:        cfg.AppID,
-		apps:         github.NewClient(httpClient),
+		apps:         apps,
 		httpClient:   httpClient,
-		publicClient: &http.Client{Timeout: 30 * time.Second},
+		publicClient: &http.Client{Transport: base, Timeout: 30 * time.Second},
 		baseURL:      defaultBaseURL,
 		logger:       logger,
 	}, nil
@@ -127,7 +152,7 @@ func (c *Client) Mint(ctx context.Context, owner string, resources []resource.Re
 	}
 	kind := resources[0].Kind
 
-	var inst *github.Installation
+	var inst *installation
 	var err error
 	switch kind {
 	case resource.KindRepo, resource.KindOrg:
@@ -141,7 +166,7 @@ func (c *Client) Mint(ctx context.Context, owner string, resources []resource.Re
 		return ScopedToken{}, err
 	}
 
-	ceiling := permMap(inst.GetPermissions())
+	ceiling := inst.Permissions
 	if gaps := perm.Gaps(perms, ceiling); gaps != nil {
 		msg := formatGaps(fmt.Sprintf("githubapp: installation for %q does not cover requested permissions:", owner), gaps)
 		return ScopedToken{}, fmt.Errorf("%w: %s", ErrInsufficientScope, msg)
@@ -151,9 +176,9 @@ func (c *Client) Mint(ctx context.Context, owner string, resources []resource.Re
 	switch kind {
 	case resource.KindRepo:
 		shortNames := resource.RepoShortNames(resources)
-		return c.MintScopedToken(ctx, inst.GetID(), shortNames, finalPerms)
+		return c.MintScopedToken(ctx, inst.ID, shortNames, finalPerms)
 	case resource.KindOrg, resource.KindEnterprise:
-		return c.MintInstallationToken(ctx, inst.GetID(), finalPerms)
+		return c.MintInstallationToken(ctx, inst.ID, finalPerms)
 	default:
 		return ScopedToken{}, fmt.Errorf("githubapp: unsupported resource kind %q", kind)
 	}
@@ -161,19 +186,24 @@ func (c *Client) Mint(ctx context.Context, owner string, resources []resource.Re
 
 // resolveInstallation finds the App installation for owner, trying the
 // organization endpoint first and falling back to the user endpoint.
-func (c *Client) resolveInstallation(ctx context.Context, owner string) (*github.Installation, error) {
-	if inst, _, err := c.apps.Apps.FindOrganizationInstallation(ctx, owner); err == nil {
-		return inst, nil
+func (c *Client) resolveInstallation(ctx context.Context, owner string) (*installation, error) {
+	escaped := url.PathEscape(owner)
+	var lastErr error
+	for _, path := range []string{"orgs/" + escaped + "/installation", "users/" + escaped + "/installation"} {
+		req, err := c.apps.NewRequest(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, fmt.Errorf("githubapp: build installation request: %w", err)
+		}
+		var inst installation
+		if _, lastErr = c.apps.Do(req, &inst); lastErr == nil {
+			return &inst, nil
+		}
 	}
-	inst, _, err := c.apps.Apps.FindUserInstallation(ctx, owner)
-	if err != nil {
-		return nil, fmt.Errorf("githubapp: no installation found for owner %q: %w", owner, err)
-	}
-	return inst, nil
+	return nil, fmt.Errorf("githubapp: no installation found for owner %q: %w", owner, lastErr)
 }
 
 // resolveEnterpriseInstallation finds the App installation for an enterprise.
-func (c *Client) resolveEnterpriseInstallation(ctx context.Context, slug string) (*github.Installation, error) {
+func (c *Client) resolveEnterpriseInstallation(ctx context.Context, slug string) (*installation, error) {
 	url := fmt.Sprintf("%s/enterprises/%s/installation", c.baseURL, slug)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -191,7 +221,7 @@ func (c *Client) resolveEnterpriseInstallation(ctx context.Context, slug string)
 		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
 		return nil, fmt.Errorf("githubapp: no installation found for enterprise %q: %d %s", slug, resp.StatusCode, strings.TrimSpace(string(snippet)))
 	}
-	var inst github.Installation
+	var inst installation
 	if err := json.NewDecoder(resp.Body).Decode(&inst); err != nil {
 		return nil, fmt.Errorf("githubapp: decode enterprise installation: %w", err)
 	}
@@ -310,24 +340,6 @@ func (c *Client) MintInstallationToken(ctx context.Context, installationID int64
 	}, nil
 }
 
-// permMap converts a go-github InstallationPermissions struct to a
-// map[string]string by JSON round-trip. Nil (omitempty) fields drop out, so
-// the result contains exactly the permissions the installation actually grants.
-func permMap(p *github.InstallationPermissions) map[string]string {
-	if p == nil {
-		return map[string]string{}
-	}
-	b, err := json.Marshal(p)
-	if err != nil {
-		return map[string]string{}
-	}
-	var m map[string]string
-	if err := json.Unmarshal(b, &m); err != nil {
-		return map[string]string{}
-	}
-	return m
-}
-
 // FetchAppIdentity fetches the App's slug (GET /app) and the corresponding
 // bot user's ID (GET /users/{slug}[bot]), then derives the bot's git
 // committer name and noreply email. The result is cached on the Client and
@@ -417,14 +429,21 @@ func (c *Client) ValidateAppPermissions(ctx context.Context, required map[string
 	if len(required) == 0 {
 		return nil
 	}
-	app, _, err := c.apps.Apps.Get(ctx, "")
+	req, err := c.apps.NewRequest(ctx, http.MethodGet, "app", nil)
 	if err != nil {
+		return fmt.Errorf("githubapp: build app manifest request: %w", err)
+	}
+	var app struct {
+		Name        string            `json:"name"`
+		Permissions map[string]string `json:"permissions"`
+	}
+	if _, err := c.apps.Do(req, &app); err != nil {
 		return fmt.Errorf("githubapp: fetch app manifest: %w", err)
 	}
-	actual := permMap(app.Permissions)
+	actual := app.Permissions
 
 	c.logger.Info("app permission validation",
-		"app_name", app.GetName(),
+		"app_name", app.Name,
 		"app_permissions", actual,
 		"required_permissions", required,
 	)

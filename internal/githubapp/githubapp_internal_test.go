@@ -6,11 +6,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
-	"github.com/google/go-github/v66/github"
+	"github.com/google/go-github/v92/github"
 )
 
 // authInjector wraps a RoundTripper and stamps an Authorization header on every
@@ -174,8 +173,8 @@ func TestResolveEnterpriseInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inst.GetID() != 99 {
-		t.Errorf("installation ID = %d, want 99", inst.GetID())
+	if inst.ID != 99 {
+		t.Errorf("installation ID = %d, want 99", inst.ID)
 	}
 }
 
@@ -213,9 +212,11 @@ func TestIntersectPermissionsMatrix(t *testing.T) {
 }
 
 func testClientWithApps(baseURL string, hc *http.Client) *Client {
-	ghc := github.NewClient(hc)
-	u, _ := url.Parse(baseURL + "/")
-	ghc.BaseURL = u
+	u := baseURL + "/"
+	ghc, err := github.NewClient(github.WithHTTPClient(hc), github.WithURLs(&u, nil))
+	if err != nil {
+		panic(err)
+	}
 	c := testClient(baseURL, hc)
 	c.apps = ghc
 	return c
@@ -346,13 +347,40 @@ func TestFetchAppIdentity(t *testing.T) {
 	}
 }
 
-func TestPermMapDropsNilFields(t *testing.T) {
-	read := "read"
-	m := permMap(&github.InstallationPermissions{Contents: &read})
-	if m["contents"] != "read" {
-		t.Fatalf("permMap round-trip failed: %v", m)
+func TestValidateAppPermissionsKeepsUnknownKeys(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"name":"test-app","permissions":{"custom_future_permission":"write"}}`))
+	}))
+	defer srv.Close()
+	c := testClientWithApps(srv.URL, srv.Client())
+
+	if err := c.ValidateAppPermissions(context.Background(), map[string]string{"custom_future_permission": "read"}); err != nil {
+		t.Fatalf("unknown permission key must not be dropped, got %v", err)
 	}
-	if len(m) != 1 {
-		t.Fatalf("only non-nil fields must survive, got %v", m)
+}
+
+func TestAPIVersionTransportSetsHeader(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-GitHub-Api-Version")
+	}))
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+
+	resp, err := (&http.Client{Transport: apiVersionTransport{base: http.DefaultTransport}}).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if got != "2026-03-10" {
+		t.Errorf("header = %q, want 2026-03-10", got)
+	}
+	if req.Header.Get("X-GitHub-Api-Version") != "2022-11-28" {
+		t.Error("caller's request must not be mutated")
 	}
 }
