@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.6.4](https://github.com/abinnovision/gh-token-broker/compare/v0.6.3...v0.6.4) (2026-09-29)
+
+
+### Bug Fixes
+
+* **deps:** update go modules, toolchain and base image ([#34](https://github.com/abinnovision/gh-token-broker/issues/34)) ([1dcb479](https://github.com/abinnovision/gh-token-broker/commit/1dcb4792aa74af09a48d5c8a0586c378c98f9c80))
+* **githubapp:** pin REST API version and keep all installation permissions ([#32](https://github.com/abinnovision/gh-token-broker/issues/32)) ([556537b](https://github.com/abinnovision/gh-token-broker/commit/556537b70a056baa973e511f11370e1997042452))
+
 ## [0.6.3](https://github.com/abinnovision/gh-token-broker/compare/v0.6.2...v0.6.3) (2026-09-29)
 
 
