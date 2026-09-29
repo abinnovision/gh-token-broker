@@ -95,7 +95,7 @@ contents:read issues:write
 
 Each permission key must exist in the
 [permission catalog](./internal/perm/catalog_gen.go) (generated from the GitHub
-REST API OpenAPI spec). Most keys support levels `read` and `write`; a few
+REST API OpenAPI spec and GitHub docs permission data). Most keys support levels `read` and `write`; a few
 support `admin`.
 
 The broker grants the **intersection** of the requested scope and the GitHub App
@@ -111,7 +111,7 @@ Policies are additive allow rules evaluated in no guaranteed order. The broker e
 - Each condition must authorize all requested resources (`request.resources`).
 - A request succeeds only when combined grants fully cover the requested scope.
 - The broker mints a token scoped to exactly what was requested.
-- `grant.permissions` is required and static. See [`internal/perm/catalog_gen.go`](./internal/perm/catalog_gen.go) for supported keys and levels (generated from the GitHub REST API OpenAPI spec).
+- `grant.permissions` is required and static. See [`internal/perm/catalog_gen.go`](./internal/perm/catalog_gen.go) for supported keys and levels (generated from the GitHub REST API OpenAPI spec and GitHub docs permission data).
 - Invalid CEL expressions prevent startup. Runtime CEL errors are logged and the policy is skipped.
 
 ### CEL variables

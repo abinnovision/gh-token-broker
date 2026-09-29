@@ -22,7 +22,25 @@
             "write"
           ]
         },
+        "actions_variables": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
         "administration": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "agent_secrets": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "agent_variables": {
           "enum": [
             "read",
             "write"
@@ -35,6 +53,12 @@
           ]
         },
         "attestations": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "blocking": {
           "enum": [
             "read",
             "write"
@@ -58,10 +82,37 @@
             "write"
           ]
         },
+        "codespaces_lifecycle_admin": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "codespaces_metadata": {
+          "enum": [
+            "read"
+          ]
+        },
+        "codespaces_secrets": {
+          "enum": [
+            "write"
+          ]
+        },
+        "codespaces_user_secrets": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
         "contents": {
           "enum": [
             "read",
             "write"
+          ]
+        },
+        "copilot_agent_settings": {
+          "enum": [
+            "read"
           ]
         },
         "custom_properties_for_organizations": {
@@ -94,11 +145,92 @@
             "write"
           ]
         },
+        "emails": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_ai_controls": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_billing": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_copilot_metrics": {
+          "enum": [
+            "read"
+          ]
+        },
+        "enterprise_copilot_usage": {
+          "enum": [
+            "read"
+          ]
+        },
+        "enterprise_credentials": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_custom_enterprise_roles": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_custom_properties": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
         "enterprise_custom_properties_for_organizations": {
           "enum": [
             "read",
             "write",
             "admin"
+          ]
+        },
+        "enterprise_innersource_vulnerabilities": {
+          "enum": [
+            "write"
+          ]
+        },
+        "enterprise_licensing": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_organization_installation_repositories": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_organization_installations": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_scim": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "enterprise_teams": {
+          "enum": [
+            "read",
+            "write"
           ]
         },
         "environments": {
@@ -108,6 +240,17 @@
           ]
         },
         "followers": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "gists": {
+          "enum": [
+            "write"
+          ]
+        },
+        "git_signing_ssh_public_keys": {
           "enum": [
             "read",
             "write"
@@ -131,7 +274,25 @@
             "write"
           ]
         },
+        "issue_fields": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "issue_types": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
         "issues": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "keys": {
           "enum": [
             "read",
             "write"
@@ -155,7 +316,31 @@
             "write"
           ]
         },
+        "org_copilot_content_exclusion": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_actions_variables": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
         "organization_administration": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_agent_secrets": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_agent_variables": {
           "enum": [
             "read",
             "write"
@@ -167,13 +352,58 @@
             "write"
           ]
         },
+        "organization_api_insights": {
+          "enum": [
+            "read"
+          ]
+        },
+        "organization_campaigns": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_code_scanning_dismissal_requests": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_codespaces": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_codespaces_secrets": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_codespaces_settings": {
+          "enum": [
+            "write"
+          ]
+        },
         "organization_copilot_agent_settings": {
           "enum": [
             "read",
             "write"
           ]
         },
+        "organization_copilot_metrics": {
+          "enum": [
+            "read"
+          ]
+        },
         "organization_copilot_seat_management": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_copilot_spaces": {
           "enum": [
             "read",
             "write"
@@ -198,12 +428,37 @@
             "write"
           ]
         },
+        "organization_dependabot_dismissal_requests": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_dependabot_secrets": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
         "organization_events": {
           "enum": [
             "read"
           ]
         },
+        "organization_external_properties_for_repos": {
+          "enum": [
+            "read",
+            "write",
+            "admin"
+          ]
+        },
         "organization_hooks": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_network_configurations": {
           "enum": [
             "read",
             "write"
@@ -232,11 +487,29 @@
             "read"
           ]
         },
+        "organization_private_registries": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
         "organization_projects": {
           "enum": [
             "read",
             "write",
             "admin"
+          ]
+        },
+        "organization_runner_custom_images": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "organization_secret_scanning_bypass_requests": {
+          "enum": [
+            "read",
+            "write"
           ]
         },
         "organization_secrets": {
@@ -269,6 +542,16 @@
             "write"
           ]
         },
+        "plan": {
+          "enum": [
+            "read"
+          ]
+        },
+        "private_repository_invitations": {
+          "enum": [
+            "read"
+          ]
+        },
         "profile": {
           "enum": [
             "write"
@@ -277,6 +560,23 @@
         "pull_requests": {
           "enum": [
             "read",
+            "write"
+          ]
+        },
+        "repo_secret_scanning_dismissal_requests": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "repository_advisories": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "repository_creation": {
+          "enum": [
             "write"
           ]
         },
@@ -300,6 +600,18 @@
           ]
         },
         "secret_scanning_alerts": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "secret_scanning_bypass_requests": {
+          "enum": [
+            "read",
+            "write"
+          ]
+        },
+        "secret_scanning_dismissal_requests": {
           "enum": [
             "read",
             "write"
@@ -339,6 +651,11 @@
           "enum": [
             "read",
             "write"
+          ]
+        },
+        "watching": {
+          "enum": [
+            "read"
           ]
         },
         "workflows": {
