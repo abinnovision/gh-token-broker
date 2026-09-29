@@ -1,13 +1,13 @@
 module github.com/abinnovision/gh-token-broker
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/cel-go v0.29.2
-	github.com/google/go-github/v66 v66.0.0
+	github.com/google/go-github/v92 v92.0.0
 	github.com/invopop/jsonschema v0.14.0
 	github.com/pb33f/ordered-map/v2 v2.3.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
