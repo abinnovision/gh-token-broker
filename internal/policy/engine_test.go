@@ -8,33 +8,66 @@ import (
 	"sync"
 	"testing"
 
+	celast "cel.dev/cel-go/common/ast"
+
 	"github.com/abinnovision/gh-token-broker/internal/config"
 	"github.com/abinnovision/gh-token-broker/internal/policy"
 )
 
 func discard() *slog.Logger { return slog.New(slog.DiscardHandler) }
 
-func mustEngine(t *testing.T, cfg *config.Config) *policy.Engine {
-	t.Helper()
+var (
+	// pinnedGitHub is the default test issuer. Its require pin means
+	// policies only have to constrain the resource.
+	pinnedGitHub = config.OIDCIssuer{
+		Name: "github", Preset: config.GitHubPreset, Claims: config.GitHubClaims(),
+		Require: map[string][]string{"repository_owner_id": {"1"}},
+	}
+	openGitHub = config.OIDCIssuer{Name: "github", Preset: config.GitHubPreset, Claims: config.GitHubClaims()}
+	gitlab     = config.OIDCIssuer{
+		Name: "gitlab", Issuer: "https://gitlab.example.com", Claims: []string{"sub", "project_path"},
+		Require: map[string][]string{"namespace_id": {"4711"}},
+	}
+	// openGeneric is a non-preset issuer without require, which config
+	// validation rejects; none of its claims pins the caller.
+	openGeneric = config.OIDCIssuer{Name: "gitlab", Issuer: "https://gitlab.example.com", Claims: []string{"sub", "project_path"}}
+)
+
+// newEngine fills in defaults: cost and list limits, pinnedGitHub as the
+// only issuer and as the issuer of policies without one.
+func newEngine(cfg *config.Config) (*policy.Engine, error) {
 	if cfg.Policy.CostLimit == 0 {
 		cfg.Policy.CostLimit = 10000
 	}
 	if cfg.Policy.MaxRepositories == 0 {
 		cfg.Policy.MaxRepositories = 256
 	}
-	e, err := policy.New(cfg, discard())
+	if len(cfg.OIDC.Issuers) == 0 {
+		cfg.OIDC.Issuers = []config.OIDCIssuer{pinnedGitHub}
+	}
+	for i := range cfg.Policies {
+		if cfg.Policies[i].Issuer == "" {
+			cfg.Policies[i].Issuer = pinnedGitHub.Name
+		}
+	}
+	return policy.New(cfg, discard())
+}
+
+func mustEngine(t *testing.T, cfg *config.Config) *policy.Engine {
+	t.Helper()
+	e, err := newEngine(cfg)
 	if err != nil {
 		t.Fatalf("policy.New: %v", err)
 	}
 	return e
 }
 
-func caller(repository, owner string) policy.Caller {
-	return policy.Caller{Repository: repository, RepositoryOwner: owner}
+func caller(repository, owner string) map[string]string {
+	return map[string]string{"repository": repository, "repository_owner": owner}
 }
 
-func input(c policy.Caller, resources ...string) policy.Input {
-	return policy.Input{Caller: c, Request: policy.Request{Resources: resources}}
+func input(c map[string]string, resources ...string) policy.Input {
+	return policy.Input{Issuer: pinnedGitHub.Name, Caller: c, Request: policy.Request{Resources: resources}}
 }
 
 func scope(permissions map[string]string) policy.Scope {
@@ -56,7 +89,7 @@ func evaluate(t *testing.T, e *policy.Engine, required map[string]string, resour
 
 func TestDefaultRejectWhenNoPolicyMatches(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{{
-		Name: "owner", Condition: `caller.repository_owner == "acme"`,
+		Name: "owner", Condition: `caller.repository_owner == "acme" && request.resource == "repo:acme/app"`,
 		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}}})
 	d, err := e.Evaluate(input(caller("acme/app", "someone-else"), "repo:acme/app"), scope(map[string]string{"contents": "read"}))
@@ -70,8 +103,8 @@ func TestDefaultRejectWhenNoPolicyMatches(t *testing.T) {
 
 func TestMatchingPoliciesCombinePermissionsRegardlessOfOrder(t *testing.T) {
 	policies := []config.Policy{
-		{Name: "contents-read", Condition: "true", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
-		{Name: "contents-write", Condition: "true", Grant: config.Grant{Permissions: map[string]string{"contents": "write"}}},
+		grantPolicy("contents-read", `request.resource == "repo:acme/app"`, map[string]string{"contents": "read"}),
+		grantPolicy("contents-write", `request.resource == "repo:acme/app"`, map[string]string{"contents": "write"}),
 	}
 	required := scope(map[string]string{"contents": "write"})
 
@@ -95,7 +128,7 @@ func TestMatchingPoliciesCombinePermissionsRegardlessOfOrder(t *testing.T) {
 
 func TestCombinedPoliciesMustFullyCoverPermissions(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{{
-		Name: "contents-read", Condition: "true",
+		Name: "contents-read", Condition: `request.resource == "repo:acme/app"`,
 		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}}})
 	for _, required := range []policy.Scope{
@@ -115,7 +148,7 @@ func TestCombinedPoliciesMustFullyCoverPermissions(t *testing.T) {
 func TestConditionMustAuthorizeRequestedRepositories(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{{
 		Name:      "own-repository",
-		Condition: `request.resources.all(r, r == "repo:" + caller.repository)`,
+		Condition: `request.resource == "repo:" + caller.repository`,
 		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}}})
 	for _, resources := range [][]string{{"repo:acme/app"}, {"repo:acme/other"}} {
@@ -132,7 +165,7 @@ func TestConditionMustAuthorizeRequestedRepositories(t *testing.T) {
 func TestConditionMustAuthorizeOrgKindResources(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{{
 		Name:      "own-org",
-		Condition: `request.resources.all(r, r == "org:acme")`,
+		Condition: `request.resource == "org:acme"`,
 		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}}})
 	d, err := e.Evaluate(input(caller("acme/app", "acme"), "org:acme"), scope(map[string]string{"contents": "read"}))
@@ -146,8 +179,8 @@ func TestConditionMustAuthorizeOrgKindResources(t *testing.T) {
 
 func TestRuntimeEvaluationErrorIsSkipped(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{
-		{Name: "broken-at-runtime", Condition: "1 / 0 == 0", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
-		{Name: "allow", Condition: "true", Grant: config.Grant{Permissions: map[string]string{"contents": "read"}}},
+		grantPolicy("broken-at-runtime", `request.resource == "repo:acme/app" && 1 / 0 == 0`, map[string]string{"contents": "read"}),
+		grantPolicy("allow", `request.resource == "repo:acme/app"`, map[string]string{"contents": "read"}),
 	}})
 	d, err := e.Evaluate(input(caller("acme/app", "acme"), "repo:acme/app"), scope(map[string]string{"contents": "read"}))
 	if err != nil {
@@ -167,10 +200,9 @@ func TestUnknownCELFieldsFailPolicyCompilation(t *testing.T) {
 		`action.owner == "acme"`,
 		`caller_advisory.actor == "x"`,
 	} {
-		_, err := policy.New(&config.Config{
-			Policy:   config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256},
-			Policies: []config.Policy{{Name: "invalid", Condition: condition}},
-		}, discard())
+		_, err := newEngine(&config.Config{
+			Policies: []config.Policy{{Name: "invalid", Condition: condition + ` && request.resource == "repo:acme/app"`}},
+		})
 		if err == nil {
 			t.Fatalf("condition %q must fail compilation", condition)
 		}
@@ -182,7 +214,7 @@ func TestCostLimitTripsAndIsSkipped(t *testing.T) {
 		Policy: config.PolicyConfig{CostLimit: 10},
 		Policies: []config.Policy{{
 			Name:      "expensive",
-			Condition: `[1,2,3,4,5,6,7,8,9,10].all(x, [1,2,3,4,5,6,7,8,9,10].all(y, x + y > 0))`,
+			Condition: `request.resource == "repo:acme/app" && [1,2,3,4,5,6,7,8,9,10].all(x, [1,2,3,4,5,6,7,8,9,10].all(y, x + y > 0))`,
 			Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 		}},
 	})
@@ -199,7 +231,7 @@ func TestOversizedRepositoriesRejectedBeforeEvaluation(t *testing.T) {
 	e := mustEngine(t, &config.Config{
 		Policy: config.PolicyConfig{MaxRepositories: 2},
 		Policies: []config.Policy{{
-			Name: "any", Condition: "true",
+			Name: "any", Condition: `request.resource == "repo:a/1"`,
 			Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
 		}},
 	})
@@ -210,10 +242,9 @@ func TestOversizedRepositoriesRejectedBeforeEvaluation(t *testing.T) {
 }
 
 func TestCompileErrorNamesPolicy(t *testing.T) {
-	_, err := policy.New(&config.Config{
-		Policy:   config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256},
+	_, err := newEngine(&config.Config{
 		Policies: []config.Policy{{Name: "broken", Condition: "this is not CEL (("}},
-	}, discard())
+	})
 	if err == nil {
 		t.Fatal("expected compile error")
 	}
@@ -223,9 +254,9 @@ func TestCompileErrorNamesPolicy(t *testing.T) {
 // write access, its "-gitops" sibling read access.
 func productionPolicies() []config.Policy {
 	return []config.Policy{
-		grantPolicy("self-repo-rw", `request.resources.all(r, r == "repo:" + caller.repository)`,
+		grantPolicy("self-repo-rw", `request.resource == "repo:" + caller.repository`,
 			map[string]string{"contents": "write", "actions": "read"}),
-		grantPolicy("gitops-sibling", `request.resources.all(r, r == "repo:" + caller.repository + "-gitops")`,
+		grantPolicy("gitops-sibling", `request.resource == "repo:" + caller.repository + "-gitops"`,
 			map[string]string{"contents": "read"}),
 	}
 }
@@ -243,8 +274,8 @@ func TestPerResourceGrantEqualsSingleResourceGrant(t *testing.T) {
 			grantPolicy("base", `request.resource in ["repo:acme/app", "repo:acme/lib"]`, map[string]string{"contents": "read"}),
 			grantPolicy("elevated", `request.resource == "repo:acme/app"`, map[string]string{"contents": "write", "issues": "write"}),
 		}, []string{"repo:acme/app", "repo:acme/lib", "repo:acme/other"}, map[string]string{"contents": "write"}},
-		{"exists and in", []config.Policy{
-			grantPolicy("exists", `request.resources.exists(r, r == "repo:acme/app")`, map[string]string{"contents": "write"}),
+		{"alias", []config.Policy{
+			grantPolicy("equals", `request.resources == ["repo:acme/app"]`, map[string]string{"contents": "write"}),
 			grantPolicy("in", `"repo:acme/lib" in request.resources`, map[string]string{"contents": "read"}),
 		}, []string{"repo:acme/app", "repo:acme/lib", "repo:acme/victim"}, map[string]string{"contents": "read"}},
 	}
@@ -290,9 +321,9 @@ func TestPartialLevelCoverageDenied(t *testing.T) {
 	}
 }
 
-func TestExistsAndInCannotSmuggleSecondRepo(t *testing.T) {
+func TestAliasCannotSmuggleSecondRepo(t *testing.T) {
 	for _, condition := range []string{
-		`request.resources.exists(r, r == "repo:acme/app")`,
+		`request.resources == ["repo:acme/app"]`,
 		`"repo:acme/app" in request.resources`,
 	} {
 		e := mustEngine(t, &config.Config{Policies: []config.Policy{
@@ -307,7 +338,7 @@ func TestExistsAndInCannotSmuggleSecondRepo(t *testing.T) {
 
 func TestSizeGuardDoesNotOverGrant(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{
-		grantPolicy("size-guard", `size(request.resources) > 1 || request.resource == "repo:acme/app"`,
+		grantPolicy("size-guard", `size(request.resources) == 2 && request.resource == "repo:acme/victim" || request.resource == "repo:acme/app"`,
 			map[string]string{"contents": "write"}),
 	}})
 	required := map[string]string{"contents": "write"}
@@ -331,7 +362,7 @@ func TestResourceWithoutMatchDeniedEvenWithEmptyScope(t *testing.T) {
 
 func TestEmptyResourcesDenied(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{
-		grantPolicy("any", "true", map[string]string{"contents": "read"}),
+		grantPolicy("any", `request.resource == "repo:acme/app"`, map[string]string{"contents": "read"}),
 	}})
 	if d := evaluate(t, e, map[string]string{"contents": "read"}); d.Allowed {
 		t.Fatalf("empty resource list must be denied: %+v", d)
@@ -341,7 +372,7 @@ func TestEmptyResourcesDenied(t *testing.T) {
 func TestDecisionIndependentOfResourceOrderAndDuplicates(t *testing.T) {
 	policies := []config.Policy{
 		grantPolicy("app", `request.resource == "repo:acme/app"`, map[string]string{"contents": "write"}),
-		grantPolicy("all-read", "true", map[string]string{"contents": "read"}),
+		grantPolicy("all-read", `request.resource in ["repo:acme/app", "repo:acme/lib"]`, map[string]string{"contents": "read"}),
 		grantPolicy("broken", `request.resource == "repo:acme/lib" && 1 / 0 == 0`, map[string]string{"issues": "write"}),
 	}
 	required := map[string]string{"contents": "write"}
@@ -359,7 +390,8 @@ func TestDecisionIndependentOfResourceOrderAndDuplicates(t *testing.T) {
 
 func TestRuntimeErrorForOneResourceDeniesOnlyThatResource(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{
-		grantPolicy("divide", `1 / (request.resource == "repo:acme/bad" ? 0 : 1) == 1`, map[string]string{"contents": "read"}),
+		grantPolicy("divide", `request.resource in ["repo:acme/app", "repo:acme/bad", "repo:acme/lib"] && `+
+			`1 / (request.resource == "repo:acme/bad" ? 0 : 1) == 1`, map[string]string{"contents": "read"}),
 	}})
 	d := evaluate(t, e, map[string]string{"contents": "read"}, "repo:acme/app", "repo:acme/bad", "repo:acme/lib")
 	if d.Allowed || !reflect.DeepEqual(d.UncoveredResources, []string{"repo:acme/bad"}) ||
@@ -376,7 +408,7 @@ func TestRuntimeErrorForOneResourceDeniesOnlyThatResource(t *testing.T) {
 func TestCapCountsFullList(t *testing.T) {
 	e := mustEngine(t, &config.Config{
 		Policy:   config.PolicyConfig{MaxRepositories: 2},
-		Policies: []config.Policy{grantPolicy("any", "true", map[string]string{"contents": "read"})},
+		Policies: []config.Policy{grantPolicy("any", `request.resource == "repo:acme/app"`, map[string]string{"contents": "read"})},
 	})
 	_, err := e.Evaluate(input(caller("acme/app", "acme"), "repo:acme/app", "repo:acme/app", "repo:acme/app"),
 		scope(map[string]string{"contents": "read"}))
@@ -389,7 +421,7 @@ func TestPolicyGrantMapNotMutated(t *testing.T) {
 	read := map[string]string{"contents": "read"}
 	write := map[string]string{"contents": "write", "issues": "read"}
 	e := mustEngine(t, &config.Config{Policies: []config.Policy{
-		grantPolicy("read", "true", read),
+		grantPolicy("read", `request.resource in ["repo:acme/app", "repo:acme/lib"]`, read),
 		grantPolicy("write", `request.resource == "repo:acme/app"`, write),
 	}})
 	var wg sync.WaitGroup
@@ -418,7 +450,7 @@ func TestAliasAndSingularAgree(t *testing.T) {
 		grantPolicy("app", `request.resource == "repo:" + caller.repository`, map[string]string{"contents": "write"}),
 	}})
 	alias := mustEngine(t, &config.Config{Policies: []config.Policy{
-		grantPolicy("app", `request.resources.all(r, r == "repo:" + caller.repository)`, map[string]string{"contents": "write"}),
+		grantPolicy("app", `"repo:" + caller.repository in request.resources`, map[string]string{"contents": "write"}),
 	}})
 	for _, resources := range [][]string{
 		{"repo:acme/app"},
@@ -443,22 +475,16 @@ func TestCompileWarnings(t *testing.T) {
 		{`request.resource == "repo:acme/a" || request.resource == "repo:acme/b"`, nil},
 		{`(request.resource == "repo:acme/a" || request.resource == "repo:acme/b") && caller.repository_owner == "acme"`, nil},
 		{`(caller.repository == "acme/a" || caller.repository == "acme/b") && request.resource == "repo:acme/app"`, nil},
-		{`(request.resource == "repo:acme/a" || caller.repository == "acme/b") && caller.repository_owner == "acme"`,
-			[]string{policy.WarnUnconstrained}},
-		{`request.resources.all(r, r == "repo:acme/app")`, []string{policy.WarnDeprecatedResources}},
-		{`caller.repository_owner == "acme"`, []string{policy.WarnUnconstrained}},
-		{`request.resource == "repo:acme/app" || caller.repository == "acme/admin"`, []string{policy.WarnUnconstrained}},
-		{"caller.repository == \"acme/app\" // request.resource\n", []string{policy.WarnUnconstrained}},
-		{`"request.resource" != "" && caller.repository == "acme/app"`, []string{policy.WarnUnconstrained}},
+		{`"repo:acme/app" in request.resources`, []string{policy.WarnDeprecatedResources}},
 		{`size(request.resources) == 1 && request.resource == "repo:acme/app"`,
 			[]string{policy.WarnDeprecatedResources, policy.WarnResourcesShape}},
 		{`request.resources.size() == 1 && request.resource == "repo:acme/app"`,
 			[]string{policy.WarnDeprecatedResources, policy.WarnResourcesShape}},
-		{`request.resources[0] == "repo:acme/app"`,
+		{`request.resources[0] == "repo:acme/app" && request.resource == "repo:acme/app"`,
 			[]string{policy.WarnDeprecatedResources, policy.WarnResourcesShape}},
 	}
 	for _, tt := range tests {
-		got, err := policy.CompileWarnings(tt.condition)
+		got, err := policy.CompileWarnings(pinnedGitHub, tt.condition)
 		if err != nil {
 			t.Fatalf("%s: %v", tt.condition, err)
 		}
@@ -477,6 +503,316 @@ func TestProductionStyleConfig(t *testing.T) {
 	for _, required := range []map[string]string{{"contents": "write"}, {"actions": "write"}} {
 		if d := evaluate(t, e, required, resources...); d.Allowed {
 			t.Fatalf("%v on both repos must be denied: %+v", required, d)
+		}
+	}
+}
+
+// TestCELMissingClaimSemantics pins the CEL behaviour the startup checks rely
+// on: has() turns an absent claim into true, a plain read of an absent claim
+// is an error, and a leading-dot caller under a shadowing comprehension keeps
+// its dot in the checked AST.
+func TestCELMissingClaimSemantics(t *testing.T) {
+	env, err := policy.NewEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vars := map[string]any{policy.VarCaller: map[string]string{}, policy.VarRequest: policy.Request{}}
+	for condition, wantErr := range map[string]bool{
+		`!has(caller.x) || false`: false,
+		`caller.x != "a"`:         true,
+	} {
+		ast, iss := env.Compile(condition)
+		if iss.Err() != nil {
+			t.Fatal(iss.Err())
+		}
+		prg, err := env.Program(ast)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, _, err := prg.Eval(vars)
+		if wantErr != (err != nil) || (!wantErr && out.Value() != true) {
+			t.Errorf("%s: out=%v err=%v", condition, out, err)
+		}
+	}
+
+	ast, iss := env.Compile(`[0].exists(caller, .caller.x == "a")`)
+	if iss.Err() != nil {
+		t.Fatal(iss.Err())
+	}
+	idents := celast.MatchDescendants(celast.NavigateAST(ast.NativeRep()), func(e celast.NavigableExpr) bool {
+		return e.Kind() == celast.IdentKind && e.AsIdent() == ".caller"
+	})
+	if len(idents) != 1 {
+		t.Fatalf("shadowed .caller not kept in the checked AST")
+	}
+}
+
+func TestPoliciesBoundToIssuer(t *testing.T) {
+	a := config.OIDCIssuer{Name: "a", Claims: []string{"sub"}, Require: map[string][]string{"tenant": {"1"}}}
+	b := a
+	b.Name = "b"
+	e := mustEngine(t, &config.Config{
+		OIDC: config.OIDCConfig{Issuers: []config.OIDCIssuer{a, b}},
+		Policies: []config.Policy{{
+			Name: "a-only", Issuer: "a", Condition: `caller.sub == "x" && request.resource == "repo:acme/app"`,
+			Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
+		}},
+	})
+	for issuer, want := range map[string]bool{"a": true, "b": false, "unknown": false} {
+		d, err := e.Evaluate(policy.Input{
+			Issuer: issuer, Caller: map[string]string{"sub": "x"},
+			Request: policy.Request{Resources: []string{"repo:acme/app"}},
+		}, scope(map[string]string{"contents": "read"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Allowed != want || (len(d.MatchedPolicies) > 0) != want {
+			t.Errorf("issuer %s: %+v", issuer, d)
+		}
+	}
+}
+
+func TestMissingClaimSkipsPolicy(t *testing.T) {
+	for _, condition := range []string{
+		`caller.sub != "a" && request.resource == "repo:acme/app"`,
+		`caller["sub"] == "a" && request.resource == "repo:acme/app"`,
+	} {
+		e := mustEngine(t, &config.Config{
+			OIDC: config.OIDCConfig{Issuers: []config.OIDCIssuer{gitlab}},
+			Policies: []config.Policy{{
+				Name: "p", Issuer: gitlab.Name, Condition: condition,
+				Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
+			}},
+		})
+		d, err := e.Evaluate(policy.Input{
+			Issuer: gitlab.Name, Caller: map[string]string{"project_path": "acme/app"},
+			Request: policy.Request{Resources: []string{"repo:acme/app"}},
+		}, scope(map[string]string{"contents": "read"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Allowed || !reflect.DeepEqual(d.SkippedPolicies, []string{"p"}) {
+			t.Errorf("%s: missing claim must skip the policy: %+v", condition, d)
+		}
+	}
+}
+
+func TestNonIdentityClaimDoesNotPinCaller(t *testing.T) {
+	const ref = `caller.ref == "refs/heads/main" && request.resource == "repo:acme/app"`
+	_, err := newEngine(&config.Config{
+		OIDC:     config.OIDCConfig{Issuers: []config.OIDCIssuer{openGitHub}},
+		Policies: []config.Policy{grantPolicy("main", ref, map[string]string{"contents": "read"})},
+	})
+	if err == nil {
+		t.Fatal("a ref comparison alone must not satisfy the caller check without require")
+	}
+
+	e := mustEngine(t, &config.Config{
+		OIDC: config.OIDCConfig{Issuers: []config.OIDCIssuer{openGitHub}},
+		Policies: []config.Policy{grantPolicy("main", `caller.repository == "acme/app" && `+ref,
+			map[string]string{"contents": "read"})},
+	})
+	for repository, want := range map[string]bool{"acme/app": true, "evil/app": false} {
+		c := map[string]string{"repository": repository, "ref": "refs/heads/main"}
+		d, err := e.Evaluate(input(c, "repo:acme/app"), scope(map[string]string{"contents": "read"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if d.Allowed != want {
+			t.Errorf("%s: allowed = %t, want %t", repository, d.Allowed, want)
+		}
+	}
+}
+
+func TestAbsentPresetClaimSkipsPolicy(t *testing.T) {
+	e := mustEngine(t, &config.Config{Policies: []config.Policy{
+		grantPolicy("prod", `caller.environment == "prod" && request.resource == "repo:acme/app"`, map[string]string{"contents": "read"}),
+	}})
+	required := scope(map[string]string{"contents": "read"})
+	d, err := e.Evaluate(input(caller("acme/app", "acme"), "repo:acme/app"), required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Allowed || len(d.MatchedPolicies) != 0 || !reflect.DeepEqual(d.SkippedPolicies, []string{"prod"}) {
+		t.Fatalf("policy reading an absent claim must be skipped: %+v", d)
+	}
+	c := caller("acme/app", "acme")
+	c["environment"] = "prod"
+	if d, err := e.Evaluate(input(c, "repo:acme/app"), required); err != nil || !d.Allowed {
+		t.Fatalf("policy must match with the claim present: %+v %v", d, err)
+	}
+}
+
+func TestConditionRules(t *testing.T) {
+	const app = ` && request.resource == "repo:acme/app"`
+	tests := []struct {
+		issuer    config.OIDCIssuer
+		condition string
+		ok        bool
+	}{
+		// Accepted forms.
+		{pinnedGitHub, `request.resource == "repo:acme/app"`, true},
+		{pinnedGitHub, `.request.resource == "repo:acme/app"`, true},
+		{openGitHub, `request.resource == "repo:" + caller.repository`, true},
+		{openGitHub, `request.resource == "repo:" + caller["repository"]`, true},
+		{openGitHub, `request.resource == "repo:" + caller.repository + "-gitops"`, true},
+		{openGitHub, `request.resource == "repo:" + caller.repository_owner + "/tools"`, true},
+		{openGitHub, `request.resource == "org:" + caller.repository_owner`, true},
+		{openGitHub, `request.resource in ["repo:" + caller.repository, "repo:" + caller.repository + "-gitops"]`, true},
+		{openGitHub, `"repo:" + caller.repository in request.resources`, true},
+		{openGitHub, `caller.repository == "acme/app" && request.resource == "repo:acme/shared"`, true},
+		{openGitHub, `caller.repository_owner == "acme" && request.resource in ["repo:acme/shared", "repo:" + caller.repository]`, true},
+		{openGitHub, `caller.repository_owner == "acme"` + app, true},
+		{openGitHub, `caller["repository_owner"] == "acme"` + app, true},
+		{openGitHub, `.caller.repository_owner == "acme"` + app, true},
+		{openGitHub, `caller.repository_owner in ["acme", "other"]` + app, true},
+		{gitlab, `request.resource in ["repo:acme/a", "repo:acme/b"]`, true},
+		{gitlab, `"repo:acme/app" == request.resource && caller.project_path == "acme/app"`, true},
+		{gitlab, `(request.resource == "repo:acme/a" && caller.sub == "x") || request.resource == "repo:acme/b"`, true},
+		{openGitHub, `caller.workflow_ref == "acme/app/.github/workflows/deploy.yml@refs/heads/main"` + app, true},
+		{openGitHub, `caller.repository_owner == "acme" && caller.job_workflow_ref == "acme/shared/.github/workflows/deploy.yml@refs/heads/main"` + app, true},
+		{openGitHub, `caller.job_workflow_ref == "acme/shared/.github/workflows/deploy.yml@refs/heads/main"` + app, false},
+		{openGitHub, `caller.enterprise_id in ["7"]` + app, true},
+		{openGitHub, `caller.repository == "acme/app" && caller.ref == "refs/heads/main"` + app, true},
+		{openGitHub, `caller.repository == "acme/app" && caller.runner_environment == "github-hosted"` + app, true},
+		{openGitHub, `caller.repository == "acme/app" && caller.event_name == "push"` + app, true},
+		{openGitHub, `caller.repository == "acme/app" && caller.repository_visibility == "private"` + app, true},
+		{openGitHub, `caller.repository == "acme/app" && caller.environment == "prod"` + app, true},
+		{openGitHub, `caller.repository == "acme/app" && caller.sub == "repo:acme/app:environment:prod"` + app, true},
+		{openGitHub, `caller.repository == "acme/app" && (caller.repository_id == "1" || caller.ref == "refs/heads/main")` + app, true},
+		{pinnedGitHub, `caller.ref == "refs/heads/main"` + app, true},
+		{pinnedGitHub, `caller.runner_environment == "github-hosted"` + app, true},
+		{pinnedGitHub, `caller.event_name == "push"` + app, true},
+		{pinnedGitHub, `caller.repository_visibility == "private"` + app, true},
+		{pinnedGitHub, `caller.environment == "prod"` + app, true},
+		{pinnedGitHub, `caller.sub == "repo:acme/app:environment:prod"` + app, true},
+		{pinnedGitHub, `caller.ref_protected == "true" && caller.ref_type == "branch" && caller.sha == "abc"` + app, true},
+		{pinnedGitHub, `caller.ref == caller.repository` + app, true},
+
+		// Unconstrained resource.
+		{pinnedGitHub, `true`, false},
+		{pinnedGitHub, `caller.repository == "acme/app"`, false},
+		{pinnedGitHub, `request.resource != "repo:acme/app"`, false},
+		{pinnedGitHub, `!(request.resource == "repo:acme/app")`, false},
+		{pinnedGitHub, `(request.resource == "repo:acme/app") == false`, false},
+		{pinnedGitHub, `request.resource == request.resource`, false},
+		{pinnedGitHub, `size(request.resource) == 13`, false},
+		{pinnedGitHub, `has(request.resource) == true`, false},
+		{pinnedGitHub, `request.resources.exists(r, r == "repo:acme/app")`, false},
+		{pinnedGitHub, `request.resource == "repo:acme/app" || caller.repository == "acme/admin"`, false},
+		{pinnedGitHub, "caller.repository == \"acme/app\" // request.resource\n", false},
+		{pinnedGitHub, `"request.resource" != "" && caller.repository == "acme/app"`, false},
+
+		// Unconstrained caller without require.
+		{openGitHub, `request.resource == "repo:acme/app"`, false},
+		{openGitHub, `caller.repository != "acme/app"` + app, false},
+		{openGitHub, `caller.repository == caller.repository_owner` + app, false},
+		{openGitHub, `caller.repository == "acme/app"` + app + ` || request.resource == "repo:acme/lib"`, false},
+		{openGitHub, `caller.repository == caller.workflow_ref` + app, false},
+		{openGitHub, `caller.ref == caller.repository` + app, false},
+
+		// Only non-identity claims compared, without require.
+		{openGitHub, `caller.ref == "refs/heads/main"` + app, false},
+		{openGitHub, `caller.ref in ["refs/heads/main"]` + app, false},
+		{openGitHub, `caller.runner_environment == "github-hosted"` + app, false},
+		{openGitHub, `caller.event_name == "push"` + app, false},
+		{openGitHub, `caller.repository_visibility == "private"` + app, false},
+		{openGitHub, `caller.environment == "prod"` + app, false},
+		{openGitHub, `caller.environment_node_id == "EN_1"` + app, false},
+		{openGitHub, `caller.sub == "repo:acme/app:environment:prod"` + app, false},
+		{openGitHub, `caller.issuer_scope == "enterprise"` + app, false},
+		{openGitHub, `caller.ref_protected == "true" && caller.sha == "abc"` + app, false},
+		{openGitHub, `(caller.repository == "acme/app" || caller.ref == "refs/heads/main")` + app, false},
+		{openGitHub, `caller.repository == "acme/app"` + app + ` || caller.ref == "refs/heads/main"` + app, false},
+		{openGeneric, `caller.project_path == "acme/app"` + app, false},
+
+		// Resource not anchored to the caller, without require.
+		{openGitHub, `request.resource in ["repo:acme/shared", "repo:" + caller.repository]`, false},
+		{openGitHub, `request.resource == (caller.repository_owner == "acme" ? "repo:acme/shared" : "repo:acme/shared")`, false},
+		{openGitHub, `request.resource == "repo:acme/shared" + (caller.repository == "" ? "" : "")`, false},
+		{openGitHub, `request.resource in ["repo:acme/shared"] + [caller.repository]`, false},
+		{openGitHub, `request.resource in {"repo:acme/shared": true, caller.repository: true}`, false},
+		{openGitHub, `request.resource == "repo:acme/" + caller.repository_owner`, false},
+		{openGitHub, `request.resource == "repo:" + caller.repository_owner`, false},
+		{openGitHub, `request.resource == "repo:" + caller.repository_owner + "tools"`, false},
+		{openGitHub, `request.resource == "org:" + caller.repository_owner + "x"`, false},
+		{openGitHub, `request.resource == "repo:" + caller.job_workflow_ref`, false},
+		{openGitHub, `request.resource == "repo:" + (caller.repository + "-gitops")`, false},
+
+		// String functions and ordering comparisons.
+		{gitlab, `caller.sub.startsWith("a")` + app, false},
+		{gitlab, `caller.sub.endsWith("a")` + app, false},
+		{gitlab, `caller.sub.contains("a")` + app, false},
+		{gitlab, `caller.sub.matches("^a")` + app, false},
+		{gitlab, `matches(caller.sub, "^a")` + app, false},
+		{pinnedGitHub, `request.resource.startsWith("repo:acme/")` + app, false},
+		{gitlab, `caller.sub > "a"` + app, false},
+		{pinnedGitHub, `request.resource >= "repo:acme/"` + app, false},
+
+		// Non-literal resource for a non-preset issuer.
+		{gitlab, `request.resource == "repo:" + caller.project_path`, false},
+		{gitlab, `request.resource in ["repo:" + caller.project_path]`, false},
+		{gitlab, `request.resource == "repo:acme/" + "app"`, false},
+		{gitlab, `"repo:acme/app" in request.resources`, false},
+		{gitlab, `[request].exists(r, r.resource != "")` + app, false},
+
+		// Caller access other than a declared claim.
+		{gitlab, `has(caller.sub)` + app, false},
+		{gitlab, `(!has(caller.sub) || false)` + app, false},
+		{gitlab, `!has(caller.sub) || false`, false},
+		{gitlab, `caller.?sub == "x"` + app, false},
+		{gitlab, `caller[?"sub"] == "x"` + app, false},
+		{gitlab, `"sub" in caller` + app, false},
+		{gitlab, `size(caller) == 1` + app, false},
+		{gitlab, `caller.exists(k, k == "sub")` + app, false},
+		{gitlab, `caller.all(k, caller[k] == "x")` + app, false},
+		{gitlab, `caller[request.resource] == "x"` + app, false},
+		{gitlab, `caller["s" + "ub"] == "x"` + app, false},
+		{gitlab, `caller == {"sub": "x"}` + app, false},
+		{gitlab, `dyn(caller).sub == "x"` + app, false},
+		{gitlab, `caller.undeclared == "x"` + app, false},
+		{gitlab, `.caller.undeclared == "x"` + app, false},
+		{gitlab, `caller["undeclared"] == "x"` + app, false},
+		{gitlab, `caller.repository == "acme/app"` + app, false},
+		{pinnedGitHub, `caller.actor == "octocat"` + app, false},
+		{pinnedGitHub, `caller.actor_id == "1"` + app, false},
+		{pinnedGitHub, `caller.head_ref == "main"` + app, false},
+		{pinnedGitHub, `caller.base_ref == "main"` + app, false},
+		{pinnedGitHub, `caller.workflow == "CI"` + app, false},
+		{pinnedGitHub, `caller.run_id == "1"` + app, false},
+
+		// Shadowed policy variables.
+		{gitlab, `[0].exists(caller, .caller.sub == "x")` + app, false},
+		{pinnedGitHub, `[1].exists(request, request == 1)` + app, false},
+		{pinnedGitHub, `[1].map(caller, caller)[0] == 1` + app, false},
+	}
+	for _, tt := range tests {
+		_, err := policy.CompileWarnings(tt.issuer, tt.condition)
+		if tt.ok != (err == nil) {
+			t.Errorf("issuer %s preset=%t: %s: err = %v", tt.issuer.Name, tt.issuer.IsPreset(), tt.condition, err)
+		}
+	}
+}
+
+func TestCallerAnchoredResourceDeniesOtherOwners(t *testing.T) {
+	for _, condition := range []string{
+		`request.resource in ["repo:" + caller.repository, "repo:" + caller.repository + "-gitops"]`,
+		`request.resource == "repo:" + caller.repository_owner + "/shared"`,
+		`request.resource == "org:" + caller.repository_owner`,
+		`caller.repository_owner == "acme" && request.resource in ["repo:acme/shared", "repo:" + caller.repository]`,
+	} {
+		e := mustEngine(t, &config.Config{
+			OIDC:     config.OIDCConfig{Issuers: []config.OIDCIssuer{openGitHub}},
+			Policies: []config.Policy{grantPolicy("p", condition, map[string]string{"contents": "read"})},
+		})
+		for _, r := range []string{"repo:acme/shared", "org:acme"} {
+			d, err := e.Evaluate(input(caller("evil/x", "evil"), r), scope(map[string]string{"contents": "read"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.Allowed {
+				t.Errorf("%s: caller evil/x must be denied %s: %+v", condition, r, d)
+			}
 		}
 	}
 }

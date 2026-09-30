@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "gh-token-broker",
-    "description": "Authenticates GitHub Actions OIDC callers, evaluates CEL policy, and mints least-privilege GitHub App installation tokens.",
+    "description": "Authenticates callers by OIDC ID tokens from the configured issuers, evaluates CEL policy, and mints least-privilege GitHub App installation tokens.",
     "version": "1.0.0"
   },
   "servers": [
@@ -15,7 +15,7 @@
     "/token": {
       "post": {
         "summary": "RFC 8693 OAuth 2.0 Token Exchange",
-        "description": "Exchanges a GitHub Actions OIDC ID token (`subject_token`) for a scoped GitHub App installation token. Only `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` is supported; any other grant_type is rejected with `unsupported_grant_type`. Caller identity is verified from `subject_token`, not the `Authorization` header.",
+        "description": "Exchanges an OIDC ID token from a configured issuer (`subject_token`) for a scoped GitHub App installation token. Only `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` is supported; any other grant_type is rejected with `unsupported_grant_type`. Caller identity is verified from `subject_token`, not the `Authorization` header.",
         "operationId": "tokenExchange",
         "security": [],
         "requestBody": {
@@ -113,7 +113,7 @@
       "oidcBearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "GitHub Actions OIDC token (`id-token: write` in the calling workflow)."
+        "description": "OIDC ID token from an issuer configured in the broker (for GitHub Actions, `id-token: write` in the calling workflow)."
       }
     },
     "schemas": {
@@ -127,7 +127,7 @@
           },
           "subject_token": {
             "type": "string",
-            "description": "The GitHub Actions OIDC ID token identifying the caller."
+            "description": "The OIDC ID token identifying the caller, issued by an issuer configured in the broker."
           },
           "subject_token_type": {
             "type": "string",
@@ -142,7 +142,7 @@
           "audience": {
             "type": "array",
             "items": { "type": "string" },
-            "description": "Optional; if present every value must equal the owner derived from resource."
+            "description": "Optional and not validated. The target scope is determined by resource alone."
           },
           "scope": {
             "type": "string",

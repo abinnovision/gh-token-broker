@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -25,6 +26,9 @@ import (
 )
 
 const maxBodyBytes = 1 << 20
+
+// maxLoggedErrorRunes bounds error text derived from caller input in logs.
+const maxLoggedErrorRunes = 512
 
 // RFC 8693 / RFC 6749 grant, token-type and error identifiers.
 const (
@@ -209,7 +213,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	id, err := s.auth.Authenticate(r.Context(), subjectToken)
 	if err != nil {
-		s.logger.Warn("authentication failed", "error", err.Error())
+		s.logger.Warn("authentication failed", "error", fmt.Sprintf("%.*s", maxLoggedErrorRunes, err.Error()))
 		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "subject_token verification failed")
 		return
 	}
@@ -233,7 +237,8 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decision, err := s.engine.Evaluate(policy.Input{
-		Caller:  policyCaller(id),
+		Issuer:  id.Issuer,
+		Caller:  id.Claims,
 		Request: policy.Request{Resources: resource.RawStrings(resources)},
 	}, policy.Scope{Permissions: perms})
 	if err != nil {
@@ -242,7 +247,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !decision.Allowed {
-		s.auditDeny("token", id, decision, denyReason(decision))
+		s.auditDeny("token", id, resources, perms, decision, denyReason(decision))
 		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "forbidden by policy")
 		return
 	}
@@ -250,12 +255,12 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	token, err := s.minter.Mint(r.Context(), owner, resources, perms)
 	if err != nil {
 		if errors.Is(err, githubapp.ErrEmptyScope) {
-			s.auditDeny("token", id, decision, "empty computed scope")
+			s.auditDeny("token", id, resources, perms, decision, "empty computed scope")
 			writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "forbidden by policy")
 			return
 		}
 		if errors.Is(err, githubapp.ErrInsufficientScope) {
-			s.auditDeny("token", id, decision, "installation permissions insufficient")
+			s.auditDeny("token", id, resources, perms, decision, "installation permissions insufficient")
 			writeOAuthError(w, http.StatusBadRequest, errInvalidScope, "requested scope exceeds installation permissions")
 			return
 		}
@@ -267,7 +272,14 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	s.audit.Log(audit.Event{
 		Operation:       "token",
 		Decision:        audit.DecisionAllow,
-		Caller:          id.PolicyClaims(),
+		Issuer:          id.Issuer,
+		IssuerURL:       id.IssuerURL,
+		Subject:         id.Subject,
+		TokenID:         id.TokenID,
+		IssuedAt:        id.IssuedAt,
+		Expiry:          id.Expiry,
+		Caller:          id.Claims,
+		AuditClaims:     id.AuditClaims,
 		MatchedPolicies: decision.MatchedPolicies,
 		SkippedPolicies: decision.SkippedPolicies,
 		RequestedScope:  map[string]any{"resources": resource.RawStrings(resources), "permissions": perms},
@@ -343,13 +355,22 @@ func scopeEqual(a, b map[string]string) bool {
 
 // --- helpers -----------------------------------------------------------------
 
-func (s *Server) auditDeny(op string, id *auth.Identity, decision policy.Decision, reason string) {
+func (s *Server) auditDeny(op string, id *auth.Identity, resources []resource.Resource, perms map[string]string,
+	decision policy.Decision, reason string) {
 	s.audit.Log(audit.Event{
 		Operation:       op,
 		Decision:        audit.DecisionDeny,
-		Caller:          id.PolicyClaims(),
+		Issuer:          id.Issuer,
+		IssuerURL:       id.IssuerURL,
+		Subject:         id.Subject,
+		TokenID:         id.TokenID,
+		IssuedAt:        id.IssuedAt,
+		Expiry:          id.Expiry,
+		Caller:          id.Claims,
+		AuditClaims:     id.AuditClaims,
 		MatchedPolicies: decision.MatchedPolicies,
 		SkippedPolicies: decision.SkippedPolicies,
+		RequestedScope:  map[string]any{"resources": resource.RawStrings(resources), "permissions": perms},
 		Reason:          reason,
 		TokenIssued:     false,
 	})
@@ -366,16 +387,6 @@ func denyReason(decision policy.Decision) string {
 		reason += " for resources: " + strings.Join(decision.UncoveredResources, ", ")
 	}
 	return reason
-}
-
-func policyCaller(id *auth.Identity) policy.Caller {
-	return policy.Caller{
-		Repository:        id.Repository,
-		RepositoryID:      id.RepositoryID,
-		RepositoryOwner:   id.RepositoryOwner,
-		RepositoryOwnerID: id.RepositoryOwnerID,
-		JobWorkflowRef:    id.JobWorkflowRef,
-	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

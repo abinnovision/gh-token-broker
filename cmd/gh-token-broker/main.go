@@ -1,6 +1,6 @@
-// Command gh-token-broker authenticates GitHub Actions OIDC callers,
-// evaluates operator-authored CEL policy, and mints least-privilege GitHub App
-// installation tokens for the caller.
+// Command gh-token-broker authenticates callers by OIDC ID tokens from the
+// configured issuers, evaluates operator-authored CEL policy, and mints
+// least-privilege GitHub App installation tokens for the caller.
 package main
 
 import (
@@ -58,7 +58,7 @@ func run(logger *slog.Logger, configPath string) error {
 	}
 
 	ctx := context.Background()
-	authn, err := auth.New(ctx, cfg.OIDC.Issuer, cfg.OIDC.Audience,
+	authn, err := auth.New(ctx, cfg.OIDC.Issuers,
 		time.Duration(cfg.OIDC.ClockSkewSeconds)*time.Second)
 	if err != nil {
 		return err

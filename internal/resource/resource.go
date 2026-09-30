@@ -5,7 +5,23 @@ package resource
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
+)
+
+const (
+	maxOwnerLen = 39
+	maxRepoLen  = 100
+)
+
+var (
+	// ownerPattern matches GitHub user and organization logins: ASCII
+	// alphanumerics separated by single hyphens.
+	ownerPattern = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`)
+	repoPattern  = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	// slugPattern matches the enterprise slug rule used for the enterprise
+	// issuer in the config package.
+	slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 )
 
 // Kind identifies the type of resource a Resource refers to.
@@ -52,7 +68,7 @@ func Parse(raw string) (Resource, error) {
 				Raw:   fmt.Sprintf("repo:%s/%s", owner, name),
 			}, nil
 		case string(KindOrg):
-			owner, err := requireSimpleName(remainder)
+			owner, err := requireOwner(remainder)
 			if err != nil {
 				return Resource{}, fmt.Errorf("resource: invalid org value %q: %w", raw, err)
 			}
@@ -63,7 +79,7 @@ func Parse(raw string) (Resource, error) {
 				Raw:   fmt.Sprintf("org:%s", owner),
 			}, nil
 		case string(KindEnterprise):
-			owner, err := requireSimpleName(remainder)
+			owner, err := requireSlug(remainder)
 			if err != nil {
 				return Resource{}, fmt.Errorf("resource: invalid enterprise value %q: %w", raw, err)
 			}
@@ -113,33 +129,73 @@ func splitPrefix(raw string) (prefix string, remainder string, ok bool) {
 	}
 }
 
-// splitOwnerName splits a "owner/name" remainder, requiring both parts to be
-// non-empty.
+// splitOwnerName splits an "owner/name" remainder and validates both parts.
 func splitOwnerName(remainder string) (owner string, name string, err error) {
 	owner, name, ok := strings.Cut(remainder, "/")
 	if !ok {
 		return "", "", fmt.Errorf("expected owner/name form")
 	}
 
-	if owner == "" || name == "" {
-		return "", "", fmt.Errorf("owner and name must not be empty")
+	if owner, err = requireOwner(owner); err != nil {
+		return "", "", fmt.Errorf("owner: %w", err)
+	}
+
+	if name, err = requireRepoName(name); err != nil {
+		return "", "", fmt.Errorf("name: %w", err)
 	}
 
 	return owner, name, nil
 }
 
-// requireSimpleName validates a remainder that must be non-empty and must
-// not contain a slash (used for org and enterprise values).
-func requireSimpleName(remainder string) (string, error) {
-	if remainder == "" {
+// requireOwner validates a GitHub user or organization login.
+func requireOwner(value string) (string, error) {
+	if value == "" {
 		return "", fmt.Errorf("value must not be empty")
 	}
 
-	if strings.Contains(remainder, "/") {
-		return "", fmt.Errorf("value must not contain '/'")
+	if len(value) > maxOwnerLen {
+		return "", fmt.Errorf("value must not exceed %d characters", maxOwnerLen)
 	}
 
-	return remainder, nil
+	if !ownerPattern.MatchString(value) {
+		return "", fmt.Errorf("value must contain only ASCII letters, digits and single hyphens, and must not start or end with a hyphen")
+	}
+
+	return value, nil
+}
+
+// requireRepoName validates a GitHub repository name.
+func requireRepoName(value string) (string, error) {
+	if value == "" {
+		return "", fmt.Errorf("value must not be empty")
+	}
+
+	if len(value) > maxRepoLen {
+		return "", fmt.Errorf("value must not exceed %d characters", maxRepoLen)
+	}
+
+	if value == "." || value == ".." {
+		return "", fmt.Errorf("value must not be %q", value)
+	}
+
+	if !repoPattern.MatchString(value) {
+		return "", fmt.Errorf("value must contain only ASCII letters, digits, '.', '_' and '-'")
+	}
+
+	return value, nil
+}
+
+// requireSlug validates an enterprise slug.
+func requireSlug(value string) (string, error) {
+	if value == "" {
+		return "", fmt.Errorf("value must not be empty")
+	}
+
+	if !slugPattern.MatchString(value) {
+		return "", fmt.Errorf("value must be lowercase ASCII letters and digits separated by single hyphens")
+	}
+
+	return value, nil
 }
 
 // ParseAll parses all given values and enforces that they refer to a

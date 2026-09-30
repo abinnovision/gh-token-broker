@@ -8,13 +8,36 @@ server:
   issuer: "https://gh-token-broker.example.com"
 
 oidc:
-  # GitHub Actions OIDC issuer (pinned). Override only for GHES.
-  issuer: "https://token.actions.githubusercontent.com"
-  # REQUIRED: a proxy-specific audience. GitHub's default audience is claimable
-  # by any workflow in the org, so this MUST be a value you set explicitly on
-  # the caller side (id-token: request with `aud: <this value>`).
-  audience: "gh-token-broker"
   clockSkewSeconds: 60
+  # Every issuer whose tokens the broker accepts. Policies name the issuer
+  # they apply to and are only evaluated for tokens from that issuer.
+  issuers:
+    # GitHub Actions. The preset supplies the issuer URL and the fixed set of
+    # claims policies may read (see the claim table in README.md). For an
+    # enterprise with a customized issuer, set only
+    # issuer: "https://token.actions.githubusercontent.com/<enterprise-slug>".
+    - name: github
+      preset: github
+      # REQUIRED: a broker-specific audience. GitHub's default audience is
+      # claimable by any workflow in the org, so this MUST be a value you set
+      # explicitly on the caller side (id-token: request with `aud: <this value>`).
+      audience: "gh-token-broker"
+      # Recommended: pin the organization by its immutable ID. Tokens that do
+      # not match are rejected before any policy runs.
+      require:
+        repository_owner_id: ["123456789"]
+    # Any other OIDC issuer (for example a self-managed GitLab). Such issuers
+    # must declare the claims policies may read and pin the tenant with
+    # `require` (exact values, checked before any policy runs). Prefer
+    # immutable IDs over names.
+    # - name: gitlab
+    #   issuer: "https://gitlab.example.com"
+    #   audience: "gh-token-broker"
+    #   algorithms: [RS256]            # default [RS256]
+    #   maxTokenLifetimeSeconds: 3600  # default 3600
+    #   claims: [sub, project_path]
+    #   require:
+    #     namespace_id: ["4711"]
 
 githubApp:
   appId: 123456
@@ -38,8 +61,10 @@ policy:
 # requested resource must be covered for the full requested scope.
 policies:
   # ANCHORED matching only: use == or `in [...]` against id-anchored caller
-  # claims. Never use substring/prefix matching (no such helpers are exposed).
+  # claims. Substring and prefix matching (startsWith, endsWith, contains,
+  # matches) is rejected at startup.
   - name: acme-ci
+    issuer: github
     condition: 'caller.repository_owner == "acme" && caller.repository == "acme/app" && request.resource == "repo:acme/app"'
     grant:
       permissions:
@@ -47,13 +72,32 @@ policies:
   # Conditions authorize requested resources directly, which supports
   # dynamic targets without enumerating them in configuration:
   - name: gitops-sibling
+    issuer: github
     condition: 'request.resource == "repo:" + caller.repository + "-gitops"'
     grant:
       permissions:
         contents: read
+  # Claims such as ref only narrow a policy that pins the caller with an
+  # identity claim such as repository or workflow_ref: this grants write
+  # access from main only.
+  - name: gitops-deploy
+    issuer: github
+    condition: 'caller.repository == "acme/app" && caller.ref == "refs/heads/main" && request.resource == "repo:acme/app-gitops"'
+    grant:
+      permissions:
+        contents: write
   # Organization-wide policy: grant read access to all repos in the caller's org.
   - name: org-wide-read
+    issuer: github
     condition: 'request.resource == "org:" + caller.repository_owner'
     grant:
       permissions:
         contents: read
+  # Policies for other issuers compare request.resource with string literals
+  # only.
+  # - name: gitlab-deploy
+  #   issuer: gitlab
+  #   condition: 'caller.project_path == "acme/app" && request.resource == "repo:acme/app"'
+  #   grant:
+  #     permissions:
+  #       contents: read
