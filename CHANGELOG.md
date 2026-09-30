@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/abinnovision/gh-token-broker/compare/v0.7.0...v0.8.0) (2026-09-30)
+
+
+### Features
+
+* **oidc:** accept operator-configured OIDC issuers ([#39](https://github.com/abinnovision/gh-token-broker/issues/39)) ([e94a944](https://github.com/abinnovision/gh-token-broker/commit/e94a94438b2c741234e584c5bbba6b648f86c15a))
+
 ## [0.7.0](https://github.com/abinnovision/gh-token-broker/compare/v0.6.4...v0.7.0) (2026-09-30)
 
 
