@@ -13,12 +13,14 @@ import (
 )
 
 const (
-	requestTimeout    = 10 * time.Second
-	discoveryTimeout  = 15 * time.Second
-	maxRedirects      = 3
-	maxResponseBytes  = 1 << 20
-	jwksFetchInterval = 30 * time.Second
+	requestTimeout   = 10 * time.Second
+	discoveryTimeout = 15 * time.Second
+	maxRedirects     = 3
+	maxResponseBytes = 1 << 20
 )
+
+// jwksFetchInterval is the minimum time between JWKS fetches per issuer.
+var jwksFetchInterval = 30 * time.Second
 
 // discover runs OIDC discovery for issuerURL over a dedicated client and
 // returns a key set that fetches the https jwks_uri over the same client.

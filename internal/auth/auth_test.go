@@ -3,16 +3,23 @@ package auth_test
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	jose "github.com/go-jose/go-jose/v4"
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/abinnovision/gh-token-broker/internal/auth"
@@ -132,7 +139,21 @@ func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
 // signRaw signs payload as a compact JWS with the given method and key.
 func signRaw(t *testing.T, method jwt.SigningMethod, key any, payload []byte) string {
 	t.Helper()
-	signing := b64(fmt.Appendf(nil, `{"alg":%q,"typ":"JWT"}`, method.Alg())) + "." + b64(payload)
+	return signWithHeader(t, method, key, map[string]any{"typ": "JWT"}, payload)
+}
+
+// signWithHeader signs payload as a compact JWS with an arbitrary JOSE
+// header. alg is taken from method unless header sets it.
+func signWithHeader(t *testing.T, method jwt.SigningMethod, key any, header map[string]any, payload []byte) string {
+	t.Helper()
+	if _, ok := header["alg"]; !ok {
+		header["alg"] = method.Alg()
+	}
+	h, err := json.Marshal(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signing := b64(h) + "." + b64(payload)
 	sig, err := method.Sign(signing, key)
 	if err != nil {
 		t.Fatal(err)
@@ -448,6 +469,20 @@ func TestRejectInvalidRegisteredClaims(t *testing.T) {
 		"missing audience": func(c map[string]any) { delete(c, "aud") },
 		"missing sub":      func(c map[string]any) { delete(c, "sub") },
 		"non-string jti":   func(c map[string]any) { c["jti"] = 7 },
+
+		"missing iss":                       func(c map[string]any) { delete(c, "iss") },
+		"non-string iss":                    func(c map[string]any) { c["iss"] = 7 },
+		"negative exp":                      func(c map[string]any) { c["exp"] = -1 },
+		"exp above 2^53":                    func(c map[string]any) { c["exp"] = float64(1 << 54) },
+		"string iat":                        func(c map[string]any) { c["iat"] = fmt.Sprint(now.Unix()) },
+		"string nbf":                        func(c map[string]any) { c["nbf"] = fmt.Sprint(now.Add(-time.Minute).Unix()) },
+		"null audience":                     func(c map[string]any) { c["aud"] = nil },
+		"numeric aud":                       func(c map[string]any) { c["aud"] = 7 },
+		"empty aud array":                   func(c map[string]any) { c["aud"] = []string{} },
+		"aud array with non-string element": func(c map[string]any) { c["aud"] = []any{testAudience, 7} },
+		"aud array of only a number":        func(c map[string]any) { c["aud"] = []any{7} },
+		"empty sub":                         func(c map[string]any) { c["sub"] = "" },
+		"numeric sub":                       func(c map[string]any) { c["sub"] = 7 },
 	}
 	a := newAuth(t)
 	for name, mutate := range cases {
@@ -549,8 +584,129 @@ func TestRejectEmptyToken(t *testing.T) {
 }
 
 func TestRejectTamperedSignature(t *testing.T) {
-	raw := sign(t, githubKey, githubClaims())
-	mustReject(t, newAuth(t), raw[:len(raw)-2]+"AA")
+	parts := strings.Split(sign(t, githubKey, githubClaims()), ".")
+	first := byte('A')
+	if parts[2][0] == 'A' {
+		first = 'B'
+	}
+	parts[2] = string(first) + parts[2][1:]
+	mustReject(t, newAuth(t), strings.Join(parts, "."))
+}
+
+func TestRejectTamperedPayload(t *testing.T) {
+	parts := strings.Split(sign(t, githubKey, githubClaims()), ".")
+	c := githubClaims()
+	c["sub"] = "repo:evil/app:ref:refs/heads/main"
+	payload, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts[1] = b64(payload)
+	mustReject(t, newAuth(t), strings.Join(parts, "."))
+}
+
+func TestRejectAlgorithmConfusion(t *testing.T) {
+	der, err := x509.MarshalPKIXPublicKey(&githubKey.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(githubClaims())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]struct {
+		method jwt.SigningMethod
+		key    any
+	}{
+		"HS256 keyed with the public key PEM": {jwt.SigningMethodHS256, pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})},
+		"HS256 keyed with the public key DER": {jwt.SigningMethodHS256, der},
+		"PS256 signed with the issuer key":    {jwt.SigningMethodPS256, githubKey},
+		"ES256 signed with another key":       {jwt.SigningMethodES256, ecKey},
+	}
+	a := newAuth(t)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			mustReject(t, a, signRaw(t, tc.method, tc.key, payload))
+		})
+	}
+}
+
+func TestRejectHeaderKeyInjection(t *testing.T) {
+	attacker := mustKey()
+	jwkJSON, err := jose.JSONWebKey{Key: &attacker.PublicKey}.MarshalJSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var jwk map[string]any
+	if err := json.Unmarshal(jwkJSON, &jwk); err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "attacker"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	cert, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &attacker.PublicKey, attacker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(githubClaims())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]struct {
+		key    *rsa.PrivateKey
+		header map[string]any
+	}{
+		"embedded jwk": {attacker, map[string]any{"typ": "JWT", "jwk": jwk}},
+		"jku":          {attacker, map[string]any{"typ": "JWT", "jku": "https://attacker.example.com/jwks.json"}},
+		"x5u":          {attacker, map[string]any{"typ": "JWT", "x5u": "https://attacker.example.com/cert.pem"}},
+		"x5c":          {attacker, map[string]any{"typ": "JWT", "x5c": []string{base64.StdEncoding.EncodeToString(cert)}}},
+		"unknown crit": {githubKey, map[string]any{"typ": "JWT", "crit": []string{"x-unknown"}, "x-unknown": true}},
+	}
+	a := newAuth(t)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			mustReject(t, a, signWithHeader(t, jwt.SigningMethodRS256, tc.key, tc.header, payload))
+		})
+	}
+}
+
+func TestRejectMalformedToken(t *testing.T) {
+	valid := sign(t, githubKey, githubClaims())
+	parts := strings.Split(valid, ".")
+	signed := func(payload string) string {
+		return signRaw(t, jwt.SigningMethodRS256, githubKey, []byte(payload))
+	}
+	cases := map[string]string{
+		"one segment":              parts[0],
+		"two segments":             parts[0] + "." + parts[1],
+		"four segments":            valid + ".AAAA",
+		"five segments":            valid + ".AAAA.AAAA",
+		"invalid base64 header":    "!!!." + parts[1] + "." + parts[2],
+		"invalid base64 payload":   parts[0] + ".!!!." + parts[2],
+		"invalid base64 signature": parts[0] + "." + parts[1] + ".!!!",
+		"header not JSON":          b64([]byte("not json")) + "." + parts[1] + "." + parts[2],
+		"payload not JSON":         signed("not json"),
+		"payload JSON array":       signed(`["a"]`),
+		"payload JSON string":      signed(`"a"`),
+		"bearer prefix":            "Bearer " + valid,
+		"leading space":            " " + valid,
+		"trailing space":           valid + " ",
+		"trailing tab":             valid + "\t",
+		"empty signature":          parts[0] + "." + parts[1] + ".",
+	}
+	a := newAuth(t)
+	for name, token := range cases {
+		t.Run(name, func(t *testing.T) {
+			mustReject(t, a, token)
+		})
+	}
 }
 
 func TestRejectJSONSerialization(t *testing.T) {
