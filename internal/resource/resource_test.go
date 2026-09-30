@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -63,6 +64,54 @@ func TestParse(t *testing.T) {
 			"org:acme/something",
 			"unknown:foo",
 			"noslash",
+			"repo:acme/sub/app",
+			"acme/sub/app",
+			" repo:acme/app",
+			"repo:acme/app ",
+			"repo:acme/app\n",
+			"repo: acme/app",
+			"repo:acme /app",
+			"repo:ac me/app",
+			"repo:acme/my app",
+			"repo:acme/.",
+			"repo:acme/..",
+			"repo:/app",
+			"repo:acme/",
+			"repo:-acme/app",
+			"repo:acme-/app",
+			"repo:ac--me/app",
+			"repo:ac_me/app",
+			"repo:acme[bot]/app",
+			"repo:acme/app[bot]",
+			"repo:acme/app?x=1",
+			"repo:acme/app#frag",
+			"repo:acme/a%2Fb",
+			"repo:acme:x/app",
+			"repo:" + strings.Repeat("a", 40) + "/app",
+			"repo:acme/" + strings.Repeat("r", 101),
+			"repo:acme/\u0430pp",
+			"repo:\u0430cme/app",
+			"repo:acme/app\u200b",
+			"org:",
+			" org:acme",
+			"org:acme ",
+			"org:ac:me",
+			"org:-acme",
+			"org:acme-",
+			"org:ac--me",
+			"org:ac_me",
+			"org:\u0430cme",
+			"org:" + strings.Repeat("a", 40),
+			"enterprise:",
+			"enterprise:Acme",
+			"enterprise:a--b",
+			"enterprise:-a",
+			"enterprise:a-",
+			"enterprise:a/b",
+			"enterprise:a?x=1",
+			"enterprise:a b",
+			"enterprise:a_b",
+			"enterprise:\u0430cme",
 		}
 
 		for _, input := range invalid {

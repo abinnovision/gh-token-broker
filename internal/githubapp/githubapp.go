@@ -204,8 +204,8 @@ func (c *Client) resolveInstallation(ctx context.Context, owner string) (*instal
 
 // resolveEnterpriseInstallation finds the App installation for an enterprise.
 func (c *Client) resolveEnterpriseInstallation(ctx context.Context, slug string) (*installation, error) {
-	url := fmt.Sprintf("%s/enterprises/%s/installation", c.baseURL, slug)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	endpoint := fmt.Sprintf("%s/enterprises/%s/installation", c.baseURL, url.PathEscape(slug))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("githubapp: build enterprise installation request: %w", err)
 	}

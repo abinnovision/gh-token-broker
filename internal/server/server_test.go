@@ -61,9 +61,28 @@ func (f *fakeMinter) Mint(_ context.Context, owner string, resources []resource.
 
 func acmeIdentity() *auth.Identity {
 	return &auth.Identity{
-		Repository:      "acme/app",
-		RepositoryOwner: "acme",
-		JobWorkflowRef:  "acme/app/.github/workflows/ci.yml@refs/heads/main",
+		Issuer:    "github",
+		IssuerURL: config.GitHubIssuerURL,
+		Subject:   "repo:acme/app:ref:refs/heads/main",
+		TokenID:   "jti-1",
+		IssuedAt:  time.Date(2026, 7, 9, 11, 0, 0, 0, time.UTC),
+		Expiry:    time.Date(2026, 7, 9, 11, 5, 0, 0, time.UTC),
+		Claims: map[string]string{
+			"repository":       "acme/app",
+			"repository_owner": "acme",
+			"job_workflow_ref": "acme/app/.github/workflows/ci.yml@refs/heads/main",
+		},
+		AuditClaims: map[string]string{"run_id": "100", "run_number": "5", "run_attempt": "1", "check_run_id": "200"},
+	}
+}
+
+func testConfig(policies []config.Policy) *config.Config {
+	return &config.Config{
+		OIDC: config.OIDCConfig{Issuers: []config.OIDCIssuer{
+			{Name: "github", Preset: config.GitHubPreset, Claims: config.GitHubClaims()},
+		}},
+		Policy:   config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256},
+		Policies: policies,
 	}
 }
 
@@ -75,8 +94,7 @@ type harness struct {
 
 func newHarness(t *testing.T, policies []config.Policy) harness {
 	t.Helper()
-	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256}, Policies: policies}
-	engine, err := policy.New(cfg, slog.New(slog.DiscardHandler))
+	engine, err := policy.New(testConfig(policies), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("policy.New: %v", err)
 	}
@@ -128,7 +146,8 @@ func oauthError(t *testing.T, rec *httptest.ResponseRecorder) string {
 
 func allowTokenPolicy() config.Policy {
 	return config.Policy{
-		Name: "allow-acme-token", Condition: `caller.repository_owner == "acme" && request.resources.all(r, r == "repo:acme/app")`,
+		Name: "allow-acme-token", Issuer: "github",
+		Condition: `caller.repository_owner == "acme" && request.resource == "repo:acme/app"`,
 		Grant: config.Grant{
 			Permissions: map[string]string{"contents": "read"},
 		},
@@ -244,12 +263,14 @@ func TestTokenIssued(t *testing.T) {
 	if out["app_email"] != testAppIdentity().Email {
 		t.Errorf("app_email = %v, want %v", out["app_email"], testAppIdentity().Email)
 	}
+	assertAuditIdentity(t, h.audit)
 }
 
 func TestTokenConditionAuthorizesDynamicRepositories(t *testing.T) {
 	policy := config.Policy{
 		Name:      "gitops-suffix",
-		Condition: `request.resources.all(r, r == "repo:" + caller.repository + "-gitops")`,
+		Issuer:    "github",
+		Condition: `request.resource == "repo:" + caller.repository + "-gitops"`,
 		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
 	h := newHarness(t, []config.Policy{policy})
@@ -299,8 +320,9 @@ func TestTokenIssuanceRejectsUnknownRequestedPermission(t *testing.T) {
 func TestTokenDenyPathNoGitHubCallAndAudited(t *testing.T) {
 	// This policy requires owner "other"; the acme caller does not match.
 	policy := config.Policy{
-		Name: "only-other", Condition: `caller.repository_owner == "other"`,
-		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
+		Name: "only-other", Issuer: "github",
+		Condition: `caller.repository_owner == "other" && request.resource == "repo:acme/app"`,
+		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
 	h := newHarness(t, []config.Policy{policy})
 	rec := doToken(h.server.Handler(), baseTokenForm())
@@ -314,12 +336,22 @@ func TestTokenDenyPathNoGitHubCallAndAudited(t *testing.T) {
 		t.Fatal("no GitHub call on deny")
 	}
 	assertAuditDecision(t, h.audit, "deny", "token")
+	assertAuditIdentity(t, h.audit)
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(h.audit.Bytes()), &record); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"resources": []any{"repo:acme/app"}, "permissions": map[string]any{"contents": "read"}}
+	if !reflect.DeepEqual(record["requested_scope"], want) {
+		t.Errorf("audit requested_scope = %v, want %v", record["requested_scope"], want)
+	}
 }
 
 func TestTokenAuditRecordsSkippedPolicies(t *testing.T) {
 	broken := config.Policy{
-		Name: "broken-at-runtime", Condition: "1 / 0 == 0",
-		Grant: config.Grant{Permissions: map[string]string{"contents": "read"}},
+		Name: "broken-at-runtime", Issuer: "github",
+		Condition: `caller.repository_owner == "acme" && request.resource == "repo:acme/app" && 1 / 0 == 0`,
+		Grant:     config.Grant{Permissions: map[string]string{"contents": "read"}},
 	}
 	h := newHarness(t, []config.Policy{broken, allowTokenPolicy()})
 	rec := doToken(h.server.Handler(), baseTokenForm())
@@ -425,8 +457,7 @@ func TestTokenExchangeRejectsUnsupportedRequestedTokenType(t *testing.T) {
 }
 
 func TestTokenExchangeSubjectTokenVerificationFailureIsInvalidGrant(t *testing.T) {
-	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256}, Policies: []config.Policy{allowTokenPolicy()}}
-	engine, err := policy.New(cfg, slog.New(slog.DiscardHandler))
+	engine, err := policy.New(testConfig([]config.Policy{allowTokenPolicy()}), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("policy.New: %v", err)
 	}
@@ -474,8 +505,7 @@ func TestTokenExchangeIgnoresMismatchedAudience(t *testing.T) {
 }
 
 func TestTokenExchangeEmptyScopeMintErrorIsInvalidGrant(t *testing.T) {
-	cfg := &config.Config{Policy: config.PolicyConfig{CostLimit: 10000, MaxRepositories: 256}, Policies: []config.Policy{allowTokenPolicy()}}
-	engine, err := policy.New(cfg, slog.New(slog.DiscardHandler))
+	engine, err := policy.New(testConfig([]config.Policy{allowTokenPolicy()}), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("policy.New: %v", err)
 	}
@@ -495,7 +525,8 @@ func TestTokenExchangeEmptyScopeMintErrorIsInvalidGrant(t *testing.T) {
 
 func TestTokenExchangeWithOrgResource(t *testing.T) {
 	orgPolicy := config.Policy{
-		Name: "allow-acme-org", Condition: `caller.repository_owner == "acme" && request.resources.all(r, r == "org:acme")`,
+		Name: "allow-acme-org", Issuer: "github",
+		Condition: `caller.repository_owner == "acme" && request.resource == "org:acme"`,
 		Grant: config.Grant{
 			Permissions: map[string]string{"contents": "read"},
 		},
@@ -538,6 +569,40 @@ func assertAuditDecision(t *testing.T, buf *bytes.Buffer, decision, operation st
 		}
 	}
 	t.Fatalf("no audit line with decision=%s operation=%s in: %s", decision, operation, buf.String())
+}
+
+// assertAuditIdentity checks that the audit line carries the verified token
+// metadata, declared claims and audit claims of acmeIdentity.
+func assertAuditIdentity(t *testing.T, buf *bytes.Buffer) {
+	t.Helper()
+	id := acmeIdentity()
+	want := map[string]any{
+		"issuer":     id.Issuer,
+		"issuer_url": id.IssuerURL,
+		"subject":    id.Subject,
+		"token_id":   id.TokenID,
+		"issued_at":  id.IssuedAt.Format(time.RFC3339Nano),
+		"expiry":     id.Expiry.Format(time.RFC3339Nano),
+		"caller": map[string]any{
+			"repository":       "acme/app",
+			"repository_owner": "acme",
+			"job_workflow_ref": "acme/app/.github/workflows/ci.yml@refs/heads/main",
+		},
+		"audit_claims": map[string]any{"run_id": "100", "run_number": "5", "run_attempt": "1", "check_run_id": "200"},
+	}
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) != nil || record["msg"] != "audit" {
+			continue
+		}
+		for key, value := range want {
+			if !reflect.DeepEqual(record[key], value) {
+				t.Errorf("audit %s = %v, want %v", key, record[key], value)
+			}
+		}
+		return
+	}
+	t.Fatalf("no audit line in: %s", buf.String())
 }
 
 func assertAuditPolicyFields(t *testing.T, buf *bytes.Buffer, matched, skipped []string) {
