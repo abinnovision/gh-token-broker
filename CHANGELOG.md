@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/abinnovision/gh-token-broker/compare/v0.6.4...v0.7.0) (2026-09-30)
+
+
+### Features
+
+* **policy:** evaluate policies per requested resource ([aa2f26c](https://github.com/abinnovision/gh-token-broker/commit/aa2f26cca6ad01e59d3ede4a73bec6c97f2ddc56))
+
 ## [0.6.4](https://github.com/abinnovision/gh-token-broker/compare/v0.6.3...v0.6.4) (2026-09-29)
 
 
