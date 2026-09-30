@@ -51,7 +51,7 @@ githubApp:
 
 policies:
   - name: acme-ci
-    condition: 'caller.repository == "acme/app" && request.resources.all(r, r == "repo:acme/app")'
+    condition: 'caller.repository == "acme/app" && request.resource == "repo:acme/app"'
     grant:
       permissions:
         contents: read
@@ -104,12 +104,13 @@ error instead if the installation does not cover the request.
 
 ## Policies
 
-Policies are additive allow rules evaluated in no guaranteed order. The broker evaluates every policy condition and merges matching grants, using the highest permission level per key (`read < write < admin`).
+Policies are additive allow rules evaluated in no guaranteed order. The broker evaluates every policy condition once per requested resource, with `request.resource` set to that resource. For each resource it merges the grants of all policies matching that resource, using the highest permission level per key (`read < write < admin`). Grants never combine across resources.
 
 **Key rules:**
 
-- Each condition must authorize all requested resources (`request.resources`).
-- A request succeeds only when combined grants fully cover the requested scope.
+- A condition authorizes one resource at a time (`request.resource`).
+- A request succeeds only when every requested resource has at least one matching policy and its combined grant fully covers the requested scope.
+- A condition that does not reference `request.resource` matches every requested resource, including `org:` and `enterprise:` resources. The broker logs a warning at startup for such conditions.
 - The broker mints a token scoped to exactly what was requested.
 - `grant.permissions` is required and static. See [`internal/perm/catalog_gen.go`](./internal/perm/catalog_gen.go) for supported keys and levels (generated from the GitHub REST API OpenAPI spec and GitHub docs permission data).
 - Invalid CEL expressions prevent startup. Runtime CEL errors are logged and the policy is skipped.
@@ -132,26 +133,30 @@ Conditions receive two variables. Unknown fields fail compilation at startup.
 
 | Field | Type | Description |
 | ----- | ---- | ----------- |
-| `request.resources` | `list(string)` | Target resources, prefixed (e.g. `"repo:acme/app"`, `"org:acme"`). |
+| `request.resource` | `string` | The resource being evaluated, prefixed (e.g. `"repo:acme/app"`, `"org:acme"`). |
 
 ### Examples
 
 Token scoped to the caller's own repository:
 
 ```cel
-caller.repository == "acme/app" && request.resources.all(r, r == "repo:acme/app")
+caller.repository == "acme/app" && request.resource == "repo:acme/app"
 ```
 
 Token scoped to the caller's `-gitops` sibling:
 
 ```cel
-request.resources.all(r, r == "repo:" + caller.repository + "-gitops")
+request.resource == "repo:" + caller.repository + "-gitops"
 ```
+
+With both policies above, the caller `acme/app` can request a token for
+`repo:acme/app` and `repo:acme/app-gitops` together, because each resource is
+covered by its own policy.
 
 Organization-wide read access for the caller's own org:
 
 ```cel
-request.resources.all(r, r == "org:" + caller.repository_owner)
+request.resource == "org:" + caller.repository_owner
 ```
 
 ## Run

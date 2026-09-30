@@ -355,11 +355,17 @@ func (s *Server) auditDeny(op string, id *auth.Identity, decision policy.Decisio
 	})
 }
 
+// denyReason explains a policy deny for the audit log only; it names the
+// uncovered resources and is never returned to the client.
 func denyReason(decision policy.Decision) string {
+	reason := "combined policy permissions do not cover requested scope"
 	if len(decision.MatchedPolicies) == 0 {
-		return "no matching policies"
+		reason = "no matching policies"
 	}
-	return "combined policy permissions do not cover requested scope"
+	if len(decision.UncoveredResources) > 0 {
+		reason += " for resources: " + strings.Join(decision.UncoveredResources, ", ")
+	}
+	return reason
 }
 
 func policyCaller(id *auth.Identity) policy.Caller {

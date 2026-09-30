@@ -31,26 +31,29 @@ policy:
   maxRepositories: 256
 
 # Policy is CEL-only: every policy has a CEL `condition` plus a static,
-# operator-authored permission grant. Every matching policy contributes to one
-# combined permission grant; policy conditions authorize resources.
+# operator-authored permission grant. Conditions are evaluated once per
+# requested resource with `request.resource` set to that resource
+# (`request.resources` is a deprecated alias for `[request.resource]`). Each
+# resource receives the combined grant of the policies matching it, and every
+# requested resource must be covered for the full requested scope.
 policies:
   # ANCHORED matching only: use == or `in [...]` against id-anchored caller
   # claims. Never use substring/prefix matching (no such helpers are exposed).
   - name: acme-ci
-    condition: 'caller.repository_owner == "acme" && caller.repository == "acme/app" && request.resources.all(r, r == "repo:acme/app")'
+    condition: 'caller.repository_owner == "acme" && caller.repository == "acme/app" && request.resource == "repo:acme/app"'
     grant:
       permissions:
         contents: read
   # Conditions authorize requested resources directly, which supports
   # dynamic targets without enumerating them in configuration:
   - name: gitops-sibling
-    condition: 'request.resources.all(r, r == "repo:" + caller.repository + "-gitops")'
+    condition: 'request.resource == "repo:" + caller.repository + "-gitops"'
     grant:
       permissions:
         contents: read
   # Organization-wide policy: grant read access to all repos in the caller's org.
   - name: org-wide-read
-    condition: 'request.resources.all(r, r == "org:" + caller.repository_owner)'
+    condition: 'request.resource == "org:" + caller.repository_owner'
     grant:
       permissions:
         contents: read

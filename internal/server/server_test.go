@@ -577,3 +577,51 @@ func auditStrings(value any) []string {
 	}
 	return out
 }
+
+func TestDenyBodyGenericAuditNamesUncovered(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
+	form := baseTokenForm()
+	form["resource"] = []string{"acme/app", "acme/other"}
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"] != "invalid_grant" || body["error_description"] != "forbidden by policy" {
+		t.Fatalf("client error must stay generic: %s", rec.Body.String())
+	}
+	if h.minter.called {
+		t.Fatal("minter must not be called when a resource is uncovered")
+	}
+	for _, line := range strings.Split(strings.TrimSpace(h.audit.String()), "\n") {
+		var record map[string]any
+		if json.Unmarshal([]byte(line), &record) != nil || record["msg"] != "audit" {
+			continue
+		}
+		want := "combined policy permissions do not cover requested scope for resources: repo:acme/other"
+		if record["reason"] != want {
+			t.Fatalf("audit reason = %q, want %q", record["reason"], want)
+		}
+		return
+	}
+	t.Fatalf("no audit line in: %s", h.audit.String())
+}
+
+func TestTokenCaseVariantResourceDenied(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
+	form := baseTokenForm()
+	form.Set("resource", "acme/App")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if code := oauthError(t, rec); code != "invalid_grant" {
+		t.Errorf("error = %s, want invalid_grant", code)
+	}
+	if h.minter.called {
+		t.Fatal("minter must not be called for a case-variant resource")
+	}
+}

@@ -48,7 +48,7 @@ type PolicyConfig struct {
 
 type Policy struct {
 	Name      string `yaml:"name" jsonschema:"required,minLength=1"`
-	Condition string `yaml:"condition" jsonschema:"required,minLength=1,description=CEL expression evaluating to bool; the condition under which a policy contributes its grant"`
+	Condition string `yaml:"condition" jsonschema:"required,minLength=1,description=CEL expression evaluating to bool; evaluated once per requested resource with request.resource set to that resource (request.resources is a deprecated alias for [request.resource]). The policy contributes its grant to each resource it matches; every requested resource must be covered for the full scope"`
 	Grant     Grant  `yaml:"grant" jsonschema:"required"`
 }
 
