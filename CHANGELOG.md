@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/abinnovision/gh-token-broker/compare/v0.8.0...v0.8.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* **server:** no-store on token responses and harden OIDC negative tests ([#41](https://github.com/abinnovision/gh-token-broker/issues/41)) ([2eae840](https://github.com/abinnovision/gh-token-broker/commit/2eae840cdf25967c2317d9dfac994cbe6bd9f970))
+
 ## [0.8.0](https://github.com/abinnovision/gh-token-broker/compare/v0.7.0...v0.8.0) (2026-09-30)
 
 
