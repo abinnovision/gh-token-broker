@@ -133,6 +133,12 @@ func doToken(h http.Handler, form url.Values) *httptest.ResponseRecorder {
 
 func oauthError(t *testing.T, rec *httptest.ResponseRecorder) string {
 	t.Helper()
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
 	var out map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("response is not JSON: %v (body=%s)", err, rec.Body.String())
@@ -189,6 +195,9 @@ func TestMetadataRoute(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
 	var out map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatal(err)
@@ -202,6 +211,10 @@ func TestMetadataRoute(t *testing.T) {
 	grants, _ := out["grant_types_supported"].([]any)
 	if len(grants) != 1 || grants[0] != "urn:ietf:params:oauth:grant-type:token-exchange" {
 		t.Errorf("grant_types_supported = %v", out["grant_types_supported"])
+	}
+	methods, _ := out["token_endpoint_auth_methods_supported"].([]any)
+	if len(methods) != 1 || methods[0] != "none" {
+		t.Errorf("token_endpoint_auth_methods_supported = %v, want [none]", out["token_endpoint_auth_methods_supported"])
 	}
 }
 
@@ -226,6 +239,9 @@ func TestTokenIssued(t *testing.T) {
 	rec := doToken(h.server.Handler(), baseTokenForm())
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
 	if !h.minter.called {
 		t.Fatal("minter should have been called")
@@ -427,6 +443,44 @@ func TestTokenExchangeRejectsMissingSubjectToken(t *testing.T) {
 	}
 	if code := oauthError(t, rec); code != "invalid_request" {
 		t.Errorf("error = %s, want invalid_request", code)
+	}
+}
+
+func TestTokenExchangeRejectsMissingSubjectTokenType(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
+	form := baseTokenForm()
+	form.Del("subject_token_type")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_request" {
+		t.Errorf("error = %s, want invalid_request", code)
+	}
+}
+
+func TestTokenExchangeRejectsOversizedBody(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
+	form := baseTokenForm()
+	form.Set("padding", strings.Repeat("a", 1100*1024))
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	if code := oauthError(t, rec); code != "invalid_request" {
+		t.Errorf("error = %s, want invalid_request", code)
+	}
+	if h.minter.called {
+		t.Fatal("minter must not be called")
+	}
+}
+
+func TestTokenRejectsGet(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
+	rec := httptest.NewRecorder()
+	h.server.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/token", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
 	}
 }
 
