@@ -17,7 +17,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - run: go build ./...
@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: golangci/golangci-lint-action@v9
@@ -86,7 +86,7 @@ jobs:
         with:
           fetch-depth: 0 # GoReleaser needs full history + tags for its build metadata
           ref: "v${{ fromJSON(needs.release-please.outputs.versions)['.'].packageVersion }}"
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       # QEMU is not strictly required for a COPY-only Dockerfile, but is
@@ -117,7 +117,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # GoReleaser derives the snapshot version from git history
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
       - uses: goreleaser/goreleaser-action@v7
