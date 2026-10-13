@@ -1,4 +1,9 @@
-# gh-token-broker
+<p align="center">
+  <img
+    src="assets/header.png"
+    alt="gh-token-broker: least-privilege GitHub App tokens for OIDC callers, gated by CEL policies."
+  />
+</p>
 
 An OAuth 2.0 Security Token Service (STS) that mints least-privilege GitHub App
 installation tokens for GitHub Actions workflows and other callers holding an
