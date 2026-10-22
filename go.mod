@@ -6,7 +6,7 @@ require (
 	cel.dev/cel-go v0.32.0
 	github.com/bradleyfalzon/ghinstallation/v2 v2.19.0
 	github.com/coreos/go-oidc/v3 v3.21.0
-	github.com/go-jose/go-jose/v4 v4.1.5
+	github.com/go-jose/go-jose/v4 v4.1.6
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/go-github/v92 v92.0.0
 	github.com/invopop/jsonschema v0.14.0
