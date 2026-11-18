@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"reflect"
 	"strings"
@@ -94,6 +95,11 @@ type harness struct {
 
 func newHarness(t *testing.T, policies []config.Policy) harness {
 	t.Helper()
+	return newProxyHarness(t, policies, nil)
+}
+
+func newProxyHarness(t *testing.T, policies []config.Policy, proxy *config.ProxyConfig) harness {
+	t.Helper()
 	engine, err := policy.New(testConfig(policies), slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("policy.New: %v", err)
@@ -107,7 +113,7 @@ func newHarness(t *testing.T, policies []config.Policy) harness {
 	var buf bytes.Buffer
 	auditLog := audit.New(slog.New(slog.NewJSONHandler(&buf, nil)))
 	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter,
-		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity())
+		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity(), proxy)
 	return harness{server: srv, minter: minter, audit: &buf}
 }
 
@@ -518,7 +524,7 @@ func TestTokenExchangeSubjectTokenVerificationFailureIsInvalidGrant(t *testing.T
 	minter := &fakeMinter{}
 	auditLog := audit.New(slog.New(slog.DiscardHandler))
 	srv := server.New(fakeAuth{err: context.DeadlineExceeded}, engine, minter,
-		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity())
+		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity(), nil)
 
 	rec := doToken(srv.Handler(), baseTokenForm())
 	if rec.Code != http.StatusBadRequest {
@@ -566,7 +572,7 @@ func TestTokenExchangeEmptyScopeMintErrorIsInvalidGrant(t *testing.T) {
 	minter := &fakeMinter{err: githubapp.ErrEmptyScope}
 	auditLog := audit.New(slog.New(slog.DiscardHandler))
 	srv := server.New(fakeAuth{id: acmeIdentity()}, engine, minter,
-		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity())
+		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity(), nil)
 
 	rec := doToken(srv.Handler(), baseTokenForm())
 	if rec.Code != http.StatusBadRequest {
@@ -742,5 +748,71 @@ func TestTokenCaseVariantResourceDenied(t *testing.T) {
 	}
 	if h.minter.called {
 		t.Fatal("minter must not be called for a case-variant resource")
+	}
+}
+
+func TestTokenSourceIPFlowsIntoDecisionAndAudit(t *testing.T) {
+	tests := []struct {
+		name     string
+		cidr     string
+		wantCode int
+	}{
+		{name: "inside", cidr: "192.0.2.0/24", wantCode: http.StatusOK},
+		{name: "outside", cidr: "10.0.0.0/8", wantCode: http.StatusBadRequest},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := allowTokenPolicy()
+			p.SourcePrefixes = []netip.Prefix{netip.MustParsePrefix(tc.cidr)}
+			h := newHarness(t, []config.Policy{p})
+			// httptest requests carry RemoteAddr 192.0.2.1:1234.
+			rec := doToken(h.server.Handler(), baseTokenForm())
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantCode)
+			}
+			var record map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(h.audit.Bytes()), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record["source_ip"] != "192.0.2.1" {
+				t.Errorf("audit source_ip = %v, want 192.0.2.1", record["source_ip"])
+			}
+		})
+	}
+}
+
+func TestTokenSourceIPBehindProxy(t *testing.T) {
+	p := allowTokenPolicy()
+	p.SourcePrefixes = []netip.Prefix{netip.MustParsePrefix("203.0.113.0/24")}
+	proxy := &config.ProxyConfig{Header: "X-Forwarded-For", Hops: 1}
+	tests := []struct {
+		name     string
+		xff      string
+		wantCode int
+		wantIP   string
+	}{
+		// The spoofed left entry is inside the range but is never selected.
+		{name: "spoofed entry ignored", xff: "203.0.113.7, 198.51.100.9", wantCode: http.StatusBadRequest, wantIP: "198.51.100.9"},
+		{name: "proxy-appended entry matches", xff: "198.51.100.9, 203.0.113.7", wantCode: http.StatusOK, wantIP: "203.0.113.7"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newProxyHarness(t, []config.Policy{p}, proxy)
+			req := httptest.NewRequest(http.MethodPost, "/token", strings.NewReader(baseTokenForm().Encode()))
+			req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			req.Header.Set("X-Forwarded-For", tc.xff)
+			rec := httptest.NewRecorder()
+			h.server.Handler().ServeHTTP(rec, req)
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d, want %d", rec.Code, tc.wantCode)
+			}
+			var record map[string]any
+			if err := json.Unmarshal(bytes.TrimSpace(h.audit.Bytes()), &record); err != nil {
+				t.Fatal(err)
+			}
+			if record["source_ip"] != tc.wantIP {
+				t.Errorf("audit source_ip = %v, want %s", record["source_ip"], tc.wantIP)
+			}
+		})
 	}
 }

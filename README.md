@@ -189,6 +189,65 @@ Policies are additive allow rules evaluated in no guaranteed order. The broker e
 - `grant.permissions` is required and static. See [`internal/perm/catalog_gen.go`](./internal/perm/catalog_gen.go) for supported keys and levels (generated from the GitHub REST API OpenAPI spec and GitHub docs permission data).
 - Invalid CEL expressions and conditions that break the startup checks prevent startup. Runtime CEL errors are logged and the policy is skipped.
 
+### Source IP restriction
+
+A policy can be limited to callers coming from known networks with
+`sourceCidrs`:
+
+```yaml
+policies:
+  - name: self-hosted-deploy
+    issuer: github
+    sourceCidrs: ["203.0.113.0/24", "2001:db8::/48"]
+    condition: 'caller.repository == "acme/app" && caller.runner_environment == "self-hosted" && request.resource == "repo:acme/app"'
+    grant:
+      permissions:
+        contents: write
+```
+
+The policy is skipped, before its condition runs, unless the client IP lies in
+one of the ranges. An unknown client IP never matches. Without `sourceCidrs`
+the policy is not restricted. The list must not be empty, and an invalid range
+prevents startup. IPv4-mapped IPv6 addresses match IPv4 ranges. The resolved
+client IP is recorded as `source_ip` in every audit event.
+
+This is meant for self-hosted runners or larger runners with static IPs. The
+Actions ranges GitHub publishes at `api.github.com/meta` (`actions`) are
+thousands of Azure ranges shared by all customers, so they do not identify
+your workflows.
+
+By default the client IP is the TCP peer address. Behind reverse proxies, set
+`server.proxy`:
+
+```yaml
+server:
+  proxy:
+    header: X-Forwarded-For   # default
+    hops: 1                   # required
+    trustedProxies: ["10.0.0.0/8"]   # optional
+```
+
+The broker joins all lines of the header, splits them on commas and takes the
+entry `hops` positions from the right. Every trusted proxy in the chain must
+append the address of its peer to the header, and `hops` is the number of such
+appending proxies. Entries a client injects then sit further left and are never
+selected. An inner proxy that forwards without appending makes `hops` greater
+than 1 select a client-controlled entry. For a single-value header such as
+`X-Real-Ip`, use `hops: 1` and make the proxy overwrite the header. If the
+header is missing, has fewer entries than `hops` or the selected entry is not a
+plain IP address, the client IP is unknown and policies with `sourceCidrs` do
+not match.
+
+- Without `trustedProxies` the header is always used, so the broker must be
+  reachable only through the trusted proxies.
+- With `trustedProxies` the header is only used when the TCP peer lies in one of
+  those ranges. Any other peer is a direct client: the header is ignored and its
+  TCP address is used. This is the safe way to allow direct clients alongside
+  proxied ones. A trusted peer without a usable header is unknown, never the
+  proxy's own address.
+- `sourceCidrs` and `trustedProxies` take IPv4 CIDRs for IPv4 clients.
+  IPv4-mapped IPv6 prefixes (`::ffff:a.b.c.d/n`) are rejected at startup.
+
 ### CEL variables
 
 Conditions receive two variables. Unknown fields fail compilation at startup.

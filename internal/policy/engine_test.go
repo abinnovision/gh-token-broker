@@ -3,6 +3,7 @@ package policy_test
 import (
 	"log/slog"
 	"maps"
+	"net/netip"
 	"reflect"
 	"slices"
 	"sync"
@@ -814,5 +815,67 @@ func TestCallerAnchoredResourceDeniesOtherOwners(t *testing.T) {
 				t.Errorf("%s: caller evil/x must be denied %s: %+v", condition, r, d)
 			}
 		}
+	}
+}
+
+func TestSourceCIDRs(t *testing.T) {
+	restricted := grantPolicy("restricted", `request.resource == "repo:acme/app"`, map[string]string{"contents": "read"})
+	restricted.SourcePrefixes = []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24"), netip.MustParsePrefix("2001:db8::/32")}
+	open := grantPolicy("open", `request.resource == "repo:acme/other"`, map[string]string{"contents": "read"})
+	e := mustEngine(t, &config.Config{Policies: []config.Policy{restricted, open}})
+
+	tests := []struct {
+		name string
+		ip   netip.Addr
+		want bool
+	}{
+		{name: "inside ipv4", ip: netip.MustParseAddr("192.0.2.9"), want: true},
+		{name: "inside ipv6", ip: netip.MustParseAddr("2001:db8::1"), want: true},
+		{name: "mapped ipv4 inside", ip: netip.MustParseAddr("::ffff:192.0.2.9"), want: true},
+		{name: "outside", ip: netip.MustParseAddr("198.51.100.1"), want: false},
+		{name: "invalid", ip: netip.Addr{}, want: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			in := input(caller("acme/app", "acme"), "repo:acme/app")
+			in.SourceIP = tc.ip
+			d, err := e.Evaluate(in, scope(map[string]string{"contents": "read"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.Allowed != tc.want {
+				t.Errorf("Allowed = %v, want %v", d.Allowed, tc.want)
+			}
+			if len(d.SkippedPolicies) != 0 {
+				t.Errorf("SkippedPolicies = %v, want none", d.SkippedPolicies)
+			}
+		})
+	}
+
+	t.Run("policy without sourceCidrs is unaffected", func(t *testing.T) {
+		d, err := e.Evaluate(input(caller("acme/app", "acme"), "repo:acme/other"), scope(map[string]string{"contents": "read"}))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !d.Allowed {
+			t.Errorf("Allowed = false, want true")
+		}
+	})
+}
+
+func TestSourceCIDRsSkipBeforeCondition(t *testing.T) {
+	// The condition errors at runtime; an out-of-range source must skip the
+	// policy without recording an evaluation error.
+	p := grantPolicy("erroring", `request.resource == "repo:acme/app" && 1 / 0 == 0`, map[string]string{"contents": "read"})
+	p.SourcePrefixes = []netip.Prefix{netip.MustParsePrefix("192.0.2.0/24")}
+	e := mustEngine(t, &config.Config{Policies: []config.Policy{p}})
+	in := input(caller("acme/app", "acme"), "repo:acme/app")
+	in.SourceIP = netip.MustParseAddr("198.51.100.1")
+	d, err := e.Evaluate(in, scope(map[string]string{"contents": "read"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d.SkippedPolicies) != 0 {
+		t.Errorf("SkippedPolicies = %v, want none", d.SkippedPolicies)
 	}
 }

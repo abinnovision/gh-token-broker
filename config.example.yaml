@@ -6,6 +6,22 @@ server:
   # externally reachable. Used verbatim as the OAuth "issuer" value and in
   # RFC 8414 metadata. Required.
   issuer: "https://gh-token-broker.example.com"
+  # Optional. Only needed for policies with sourceCidrs when the broker runs
+  # behind reverse proxies. Without it the client IP is the TCP peer address.
+  # EVERY trusted proxy in the chain must append the address of its peer to the
+  # header, and hops is the number of such appending proxies: an inner proxy
+  # that forwards without appending makes hops > 1 select a client-controlled
+  # entry. A missing or unusable entry means the client IP is unknown.
+  # proxy:
+  #   header: X-Forwarded-For       # default X-Forwarded-For
+  #   hops: 1                       # required: number of appending proxies in front of the broker
+  #   # Use X-Real-Ip only with hops: 1 and a proxy that overwrites it.
+  #   # Optional: only trust the header from peers inside these ranges. Any
+  #   # other peer is a direct client, the header is ignored and its TCP
+  #   # address is used. Set it when the broker is reached both directly and
+  #   # through the proxies. Unset, the header is always used, so the broker
+  #   # must be reachable ONLY through the proxies.
+  #   trustedProxies: ["10.0.0.0/8"]
 
 oidc:
   clockSkewSeconds: 60
@@ -93,6 +109,17 @@ policies:
     grant:
       permissions:
         contents: read
+  # sourceCidrs restricts a policy to client IPs in the listed ranges. It is
+  # meant for self-hosted or static-IP larger runners; the IP ranges GitHub
+  # publishes for hosted runners are shared and not useful here. A request
+  # whose client IP is unknown or outside the ranges never matches the policy.
+  # - name: self-hosted-deploy
+  #   issuer: github
+  #   sourceCidrs: ["203.0.113.0/24", "2001:db8::/48"]
+  #   condition: 'caller.repository == "acme/app" && caller.runner_environment == "self-hosted" && request.resource == "repo:acme/app"'
+  #   grant:
+  #     permissions:
+  #       contents: write
   # Policies for other issuers compare request.resource with string literals
   # only.
   # - name: gitlab-deploy

@@ -686,6 +686,14 @@
         },
         "grant": {
           "$ref": "#/$defs/grant"
+        },
+        "sourceCidrs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "minItems": 1,
+          "description": "Optional CIDR ranges the client IP must fall in for the policy to apply. Absent means no restriction. The client IP is the TCP peer unless server.proxy is set."
         }
       },
       "additionalProperties": false,
@@ -708,6 +716,34 @@
         "issuer": {
           "type": "string",
           "description": "The broker's own OAuth issuer identifier — a stable absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint."
+        },
+        "proxy": {
+          "properties": {
+            "header": {
+              "type": "string",
+              "description": "Request header carrying the client IP. All header lines are joined and split on commas; the entry hops positions from the right is used. Use X-Real-Ip only with hops 1 and a proxy that overwrites it.",
+              "default": "X-Forwarded-For"
+            },
+            "hops": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Number of trusted proxies in front of the broker. EVERY one of them must append the address of its peer to the header; an inner proxy that forwards without appending makes hops greater than 1 select a client-controlled entry. 1 selects the last entry."
+            },
+            "trustedProxies": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array",
+              "minItems": 1,
+              "description": "Optional CIDR ranges of the proxies. When set the header is only used if the TCP peer is inside them; any other peer is a direct client and its TCP address is used. Use it when the broker is reached both directly and through proxies. When unset the header is always used so the broker must be reachable only through the proxies."
+            }
+          },
+          "additionalProperties": false,
+          "type": "object",
+          "required": [
+            "hops"
+          ],
+          "description": "Reverse proxies in front of the broker. Absent means the client IP is the TCP peer address. The client IP is only used by policies with sourceCidrs."
         }
       },
       "additionalProperties": false,

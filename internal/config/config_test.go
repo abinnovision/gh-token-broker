@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -547,6 +548,93 @@ func TestAggregateGrantPermissions(t *testing.T) {
 			got := cfg.AggregateGrantPermissions()
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("AggregateGrantPermissions() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadSourceCIDRs(t *testing.T) {
+	body := strings.Replace(validConfig, "    grant:", "    sourceCidrs: [\"192.0.2.77/24\", \"2001:db8::/32\"]\n    grant:", 1)
+	cfg, err := config.Load(write(t, body))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := cfg.Policies[0].SourcePrefixes
+	if len(got) != 2 || got[0].String() != "192.0.2.0/24" || got[1].String() != "2001:db8::/32" {
+		t.Errorf("SourcePrefixes = %v, want masked [192.0.2.0/24 2001:db8::/32]", got)
+	}
+}
+
+func TestLoadRejectsBadSourceCIDRs(t *testing.T) {
+	tests := []struct {
+		name  string
+		cidrs string
+		want  string
+	}{
+		{name: "invalid", cidrs: `["not-a-cidr"]`, want: `policy "allow-acme"`},
+		{name: "bare address", cidrs: `["192.0.2.1"]`, want: `policy "allow-acme"`},
+		{name: "empty list", cidrs: `[]`, want: "sourceCidrs"},
+		{name: "ipv4-mapped", cidrs: `["::ffff:192.0.2.0/120"]`, want: "write the IPv4 CIDR"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(validConfig, "    grant:", "    sourceCidrs: "+tc.cidrs+"\n    grant:", 1)
+			_, err := config.Load(write(t, body))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoadProxy(t *testing.T) {
+	withProxy := func(proxy string) string {
+		return strings.Replace(validConfig, "server:\n", "server:\n  proxy:\n"+proxy, 1)
+	}
+	t.Run("defaults", func(t *testing.T) {
+		cfg, err := config.Load(write(t, withProxy("    hops: 2\n")))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		want := config.ProxyConfig{Header: "X-Forwarded-For", Hops: 2}
+		if cfg.Server.Proxy == nil || !reflect.DeepEqual(*cfg.Server.Proxy, want) {
+			t.Errorf("Proxy = %+v, want %+v", cfg.Server.Proxy, want)
+		}
+	})
+	t.Run("header is canonicalized", func(t *testing.T) {
+		cfg, err := config.Load(write(t, withProxy("    header: x-real-ip\n    hops: 1\n    trustedProxies: [\"10.1.2.3/8\"]\n")))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		want := config.ProxyConfig{
+			Header: "X-Real-Ip", Hops: 1, TrustedProxies: []string{"10.1.2.3/8"},
+			TrustedPrefixes: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+		}
+		if !reflect.DeepEqual(*cfg.Server.Proxy, want) {
+			t.Errorf("Proxy = %+v, want %+v", *cfg.Server.Proxy, want)
+		}
+	})
+	t.Run("absent", func(t *testing.T) {
+		cfg, err := config.Load(write(t, validConfig))
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if cfg.Server.Proxy != nil {
+			t.Errorf("Proxy = %+v, want nil", cfg.Server.Proxy)
+		}
+	})
+	for name, proxy := range map[string]string{
+		"missing hops":           "    header: X-Real-Ip\n",
+		"zero hops":              "    hops: 0\n",
+		"bad header":             "    header: \"X Real\"\n    hops: 1\n",
+		"unknown field":          "    hops: 1\n    trust: all\n",
+		"empty trustedProxies":   "    hops: 1\n    trustedProxies: []\n",
+		"invalid trustedProxies": "    hops: 1\n    trustedProxies: [nope]\n",
+		"mapped trustedProxies":  "    hops: 1\n    trustedProxies: [\"::ffff:10.0.0.0/104\"]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := config.Load(write(t, withProxy(proxy))); err == nil {
+				t.Fatal("Load succeeded, want error")
 			}
 		})
 	}
