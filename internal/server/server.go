@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"mime"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ import (
 	githubappproxy "github.com/abinnovision/gh-token-broker"
 	"github.com/abinnovision/gh-token-broker/internal/audit"
 	"github.com/abinnovision/gh-token-broker/internal/auth"
+	"github.com/abinnovision/gh-token-broker/internal/config"
 	"github.com/abinnovision/gh-token-broker/internal/githubapp"
 	"github.com/abinnovision/gh-token-broker/internal/perm"
 	"github.com/abinnovision/gh-token-broker/internal/policy"
@@ -65,13 +67,15 @@ type Server struct {
 	issuer       string
 	metadataJSON []byte
 	appIdentity  githubapp.AppIdentity
+	proxy        *config.ProxyConfig
 }
 
 // New constructs a Server. issuer is the broker's own OAuth issuer
 // identifier (an absolute https:// URL); it is used verbatim in RFC 8414
 // metadata. appIdentity is the GitHub App's bot identity, included in every
 // token-exchange response so consumers can use it as a git committer
-// identity without an extra API call.
+// identity without an extra API call. proxy, when set, controls how the
+// client IP is derived for policies with sourceCidrs.
 func New(
 	authn Authenticator,
 	engine *policy.Engine,
@@ -80,6 +84,7 @@ func New(
 	logger *slog.Logger,
 	issuer string,
 	appIdentity githubapp.AppIdentity,
+	proxy *config.ProxyConfig,
 ) *Server {
 	s := &Server{
 		auth:        authn,
@@ -89,6 +94,7 @@ func New(
 		logger:      logger,
 		issuer:      issuer,
 		appIdentity: appIdentity,
+		proxy:       proxy,
 	}
 	s.metadataJSON = buildMetadataJSON(issuer)
 	return s
@@ -236,10 +242,12 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceIP := clientIP(r, s.proxy)
 	decision, err := s.engine.Evaluate(policy.Input{
-		Issuer:  id.Issuer,
-		Caller:  id.Claims,
-		Request: policy.Request{Resources: resource.RawStrings(resources)},
+		Issuer:   id.Issuer,
+		Caller:   id.Claims,
+		Request:  policy.Request{Resources: resource.RawStrings(resources)},
+		SourceIP: sourceIP,
 	}, policy.Scope{Permissions: perms})
 	if err != nil {
 		// Oversized request.repositories is rejected, not truncated.
@@ -247,7 +255,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !decision.Allowed {
-		s.auditDeny("token", id, resources, perms, decision, denyReason(decision))
+		s.auditDeny("token", id, sourceIP, resources, perms, decision, denyReason(decision))
 		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "forbidden by policy")
 		return
 	}
@@ -255,12 +263,12 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	token, err := s.minter.Mint(r.Context(), owner, resources, perms)
 	if err != nil {
 		if errors.Is(err, githubapp.ErrEmptyScope) {
-			s.auditDeny("token", id, resources, perms, decision, "empty computed scope")
+			s.auditDeny("token", id, sourceIP, resources, perms, decision, "empty computed scope")
 			writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "forbidden by policy")
 			return
 		}
 		if errors.Is(err, githubapp.ErrInsufficientScope) {
-			s.auditDeny("token", id, resources, perms, decision, "installation permissions insufficient")
+			s.auditDeny("token", id, sourceIP, resources, perms, decision, "installation permissions insufficient")
 			writeOAuthError(w, http.StatusBadRequest, errInvalidScope, "requested scope exceeds installation permissions")
 			return
 		}
@@ -275,6 +283,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		Issuer:          id.Issuer,
 		IssuerURL:       id.IssuerURL,
 		Subject:         id.Subject,
+		SourceIP:        sourceIPString(sourceIP),
 		TokenID:         id.TokenID,
 		IssuedAt:        id.IssuedAt,
 		Expiry:          id.Expiry,
@@ -355,7 +364,7 @@ func scopeEqual(a, b map[string]string) bool {
 
 // --- helpers -----------------------------------------------------------------
 
-func (s *Server) auditDeny(op string, id *auth.Identity, resources []resource.Resource, perms map[string]string,
+func (s *Server) auditDeny(op string, id *auth.Identity, sourceIP netip.Addr, resources []resource.Resource, perms map[string]string,
 	decision policy.Decision, reason string) {
 	s.audit.Log(audit.Event{
 		Operation:       op,
@@ -363,6 +372,7 @@ func (s *Server) auditDeny(op string, id *auth.Identity, resources []resource.Re
 		Issuer:          id.Issuer,
 		IssuerURL:       id.IssuerURL,
 		Subject:         id.Subject,
+		SourceIP:        sourceIPString(sourceIP),
 		TokenID:         id.TokenID,
 		IssuedAt:        id.IssuedAt,
 		Expiry:          id.Expiry,

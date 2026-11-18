@@ -31,6 +31,8 @@ type Event struct {
 	TokenID   string
 	IssuedAt  time.Time
 	Expiry    time.Time
+	// SourceIP is the resolved client IP, empty when unknown.
+	SourceIP string
 	// Caller carries the issuer's declared claims present in the token, as
 	// exposed to policies.
 	Caller map[string]string
@@ -67,6 +69,7 @@ func (a *Logger) Log(ev Event) {
 		"issuer", ev.Issuer,
 		"issuer_url", ev.IssuerURL,
 		"subject", ev.Subject,
+		"source_ip", ev.SourceIP,
 		"issued_at", ev.IssuedAt,
 		"expiry", ev.Expiry,
 		"caller", ev.Caller,

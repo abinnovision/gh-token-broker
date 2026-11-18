@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"regexp"
@@ -30,9 +32,25 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Bind   string `yaml:"bind" jsonschema:"default=:8080"`
-	Issuer string `yaml:"issuer" jsonschema:"description=The broker's own OAuth issuer identifier — a stable absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint."`
+	Bind   string       `yaml:"bind" jsonschema:"default=:8080"`
+	Issuer string       `yaml:"issuer" jsonschema:"description=The broker's own OAuth issuer identifier — a stable absolute https:// URL used as the RFC 8414 'issuer' and as the base of token_endpoint."`
+	Proxy  *ProxyConfig `yaml:"proxy" jsonschema:"description=Reverse proxies in front of the broker. Absent means the client IP is the TCP peer address. The client IP is only used by policies with sourceCidrs."`
 }
+
+// ProxyConfig describes how to derive the client IP behind trusted reverse
+// proxies. The header is only trustworthy when every trusted proxy appends the
+// address of its peer to it and clients cannot reach the broker bypassing them
+// (or TrustedProxies is set).
+type ProxyConfig struct {
+	Header         string   `yaml:"header" jsonschema:"default=X-Forwarded-For,description=Request header carrying the client IP. All header lines are joined and split on commas; the entry hops positions from the right is used. Use X-Real-Ip only with hops 1 and a proxy that overwrites it."`
+	Hops           int      `yaml:"hops" jsonschema:"required,minimum=1,description=Number of trusted proxies in front of the broker. EVERY one of them must append the address of its peer to the header; an inner proxy that forwards without appending makes hops greater than 1 select a client-controlled entry. 1 selects the last entry."`
+	TrustedProxies []string `yaml:"trustedProxies" jsonschema:"minItems=1,description=Optional CIDR ranges of the proxies. When set the header is only used if the TCP peer is inside them; any other peer is a direct client and its TCP address is used. Use it when the broker is reached both directly and through proxies. When unset the header is always used so the broker must be reachable only through the proxies."`
+	// TrustedPrefixes holds TrustedProxies parsed and masked at load.
+	TrustedPrefixes []netip.Prefix `yaml:"-"`
+}
+
+// DefaultProxyHeader is the header used when proxy.header is not set.
+const DefaultProxyHeader = "X-Forwarded-For"
 
 type OIDCConfig struct {
 	Issuers          []OIDCIssuer `yaml:"issuers" jsonschema:"required,minItems=1,description=OIDC issuers whose tokens the broker accepts"`
@@ -167,6 +185,11 @@ type Policy struct {
 	Issuer    string `yaml:"issuer" jsonschema:"required,minLength=1,description=Name of the oidc.issuers entry whose tokens this policy applies to"`
 	Condition string `yaml:"condition" jsonschema:"required,minLength=1,description=CEL expression evaluating to bool; evaluated once per requested resource with request.resource set to that resource (request.resources is a deprecated alias for [request.resource]). The policy contributes its grant to each resource it matches; every requested resource must be covered for the full scope"`
 	Grant     Grant  `yaml:"grant" jsonschema:"required"`
+	// SourceCIDRs optionally restricts the policy to callers whose client IP
+	// lies in one of the ranges.
+	SourceCIDRs []string `yaml:"sourceCidrs" jsonschema:"minItems=1,description=Optional CIDR ranges the client IP must fall in for the policy to apply. Absent means no restriction. The client IP is the TCP peer unless server.proxy is set."`
+	// SourcePrefixes holds SourceCIDRs parsed and masked at load.
+	SourcePrefixes []netip.Prefix `yaml:"-"`
 }
 
 // Permissions maps canonical GitHub App permission keys to their granted level.
@@ -296,6 +319,9 @@ func applyDefaults(cfg *Config) {
 			iss.MaxTokenLifetimeSeconds = 3600
 		}
 	}
+	if cfg.Server.Proxy != nil && cfg.Server.Proxy.Header == "" {
+		cfg.Server.Proxy.Header = DefaultProxyHeader
+	}
 	if cfg.OIDC.ClockSkewSeconds == 0 {
 		cfg.OIDC.ClockSkewSeconds = 60
 	}
@@ -347,8 +373,13 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("server.issuer must be an absolute https:// URL")
 	}
 
+	if err := validateProxy(cfg.Server.Proxy); err != nil {
+		return err
+	}
+
 	seen := map[string]bool{}
-	for _, p := range cfg.Policies {
+	for i := range cfg.Policies {
+		p := &cfg.Policies[i]
 		if seen[p.Name] {
 			return fmt.Errorf("duplicate policy name %q", p.Name)
 		}
@@ -359,8 +390,66 @@ func validate(cfg *Config) error {
 		if err := checkPermissions(fmt.Sprintf("policy %q grant", p.Name), p.Grant.Permissions); err != nil {
 			return err
 		}
+		prefixes, err := parsePrefixes(p.SourceCIDRs)
+		if err != nil {
+			return fmt.Errorf("policy %q: sourceCidrs: %w", p.Name, err)
+		}
+		p.SourcePrefixes = prefixes
 	}
 	return nil
+}
+
+// parsePrefixes parses and masks CIDRs. IPv4-mapped IPv6 prefixes are
+// rejected because client IPs are always unmapped and would never match.
+func parsePrefixes(cidrs []string) ([]netip.Prefix, error) {
+	var out []netip.Prefix
+	for _, c := range cidrs {
+		prefix, err := netip.ParsePrefix(c)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", c, err)
+		}
+		if prefix.Addr().Is4In6() {
+			return nil, fmt.Errorf("CIDR %q is an IPv4-mapped IPv6 prefix: write the IPv4 CIDR instead", c)
+		}
+		out = append(out, prefix.Masked())
+	}
+	return out, nil
+}
+
+// validateProxy checks the proxy settings after defaults are applied.
+func validateProxy(p *ProxyConfig) error {
+	if p == nil {
+		return nil
+	}
+	if p.Hops < 1 {
+		return errors.New("server.proxy.hops must be at least 1")
+	}
+	if !validHeaderName(p.Header) {
+		return fmt.Errorf("server.proxy.header %q is not a valid HTTP header name", p.Header)
+	}
+	p.Header = http.CanonicalHeaderKey(p.Header)
+	prefixes, err := parsePrefixes(p.TrustedProxies)
+	if err != nil {
+		return fmt.Errorf("server.proxy.trustedProxies: %w", err)
+	}
+	p.TrustedPrefixes = prefixes
+	return nil
+}
+
+// validHeaderName reports whether name is a non-empty RFC 9110 token.
+func validHeaderName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // validateIssuer enforces the rules for a single resolved issuer entry.

@@ -84,7 +84,7 @@ func run(logger *slog.Logger, configPath string) error {
 
 	auditLog := audit.New(logger)
 	srv := server.New(authn, engine, ghClient,
-		auditLog, logger, cfg.Server.Issuer, ghClient.AppIdentity())
+		auditLog, logger, cfg.Server.Issuer, ghClient.AppIdentity(), cfg.Server.Proxy)
 
 	httpServer := &http.Server{
 		Addr:              cfg.Server.Bind,

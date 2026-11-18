@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -62,17 +63,23 @@ type Decision struct {
 
 // Input carries the activation values for one evaluation. Issuer is the
 // configured name of the issuer that verified the caller; only its policies
-// are evaluated. Caller holds the verified claims of that issuer.
+// are evaluated. Caller holds the verified claims of that issuer. SourceIP is
+// the client IP; the zero value means unknown, which never satisfies a policy
+// with sourceCidrs.
 type Input struct {
-	Issuer  string
-	Caller  map[string]string
-	Request Request
+	Issuer   string
+	Caller   map[string]string
+	Request  Request
+	SourceIP netip.Addr
 }
 
 type compiledPolicy struct {
 	name      string
 	condition cel.Program
 	grant     Grant
+	// sources restricts the policy to client IPs in one of the prefixes; empty
+	// means unrestricted.
+	sources []netip.Prefix
 }
 
 // Engine evaluates requests against the configured policy set. Compiled
@@ -118,6 +125,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*Engine, error) {
 			name:      p.Name,
 			condition: prg,
 			grant:     Grant{Permissions: p.Grant.Permissions},
+			sources:   p.SourcePrefixes,
 		})
 	}
 	return e, nil
@@ -468,6 +476,7 @@ func (e *Engine) Evaluate(in Input, required Scope) (Decision, error) {
 		return Decision{}, err
 	}
 
+	source := in.SourceIP.Unmap()
 	decision := Decision{Grants: map[string]Grant{}}
 	matched := map[string]bool{}
 	skipped := map[string]bool{}
@@ -482,6 +491,9 @@ func (e *Engine) Evaluate(in Input, required Scope) (Decision, error) {
 		grant := Grant{Permissions: map[string]string{}}
 		covered := false
 		for _, p := range e.policies[in.Issuer] {
+			if !sourceAllowed(p.sources, source) {
+				continue
+			}
 			ok, err := evalBool(p.condition, vars)
 			if err != nil {
 				e.logger.Warn("policy evaluation error", "policy", p.name, "resource", r, "error", err.Error())
@@ -505,6 +517,15 @@ func (e *Engine) Evaluate(in Input, required Scope) (Decision, error) {
 	decision.SkippedPolicies = slices.Sorted(maps.Keys(skipped))
 	decision.Allowed = len(decision.Grants) > 0 && len(decision.UncoveredResources) == 0
 	return decision, nil
+}
+
+// sourceAllowed reports whether a policy with the given prefixes applies to
+// the (unmapped) client IP. No prefixes means no restriction.
+func sourceAllowed(prefixes []netip.Prefix, ip netip.Addr) bool {
+	if len(prefixes) == 0 {
+		return true
+	}
+	return ip.IsValid() && slices.ContainsFunc(prefixes, func(p netip.Prefix) bool { return p.Contains(ip) })
 }
 
 func mergePermissions(destination, source map[string]string) {
