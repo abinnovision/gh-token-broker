@@ -372,8 +372,12 @@ func TestFetchAppIdentity(t *testing.T) {
 			if !revoked {
 				t.Error("identity token was not revoked")
 			}
-			if tc.revokeStatus != http.StatusNoContent && !strings.Contains(buf.String(), "revoke identity token") {
+			warned := strings.Contains(buf.String(), "revoke identity token")
+			if tc.revokeStatus != http.StatusNoContent && !warned {
 				t.Errorf("log missing revoke warning: %q", buf.String())
+			}
+			if tc.revokeStatus == http.StatusNoContent && warned {
+				t.Errorf("unexpected revoke warning on success: %q", buf.String())
 			}
 			if strings.Contains(buf.String(), "ghs_identitytoken") {
 				t.Errorf("log leaks token: %q", buf.String())
