@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.9.0](https://github.com/abinnovision/gh-token-broker/compare/v0.8.1...v0.9.0) (2026-11-20)
+
+
+### Features
+
+* **config:** warn when the OIDC audience is the shared default ([#53](https://github.com/abinnovision/gh-token-broker/issues/53)) ([2235941](https://github.com/abinnovision/gh-token-broker/commit/2235941920bb71068b2fab41d166e89159374d0d))
+* **policy:** restrict policies by source IP ([#47](https://github.com/abinnovision/gh-token-broker/issues/47)) ([0adea54](https://github.com/abinnovision/gh-token-broker/commit/0adea54c06edfdbf12925102fa8172b9e14d7dea))
+* **policy:** warn when policies pin callers only by recyclable names ([#54](https://github.com/abinnovision/gh-token-broker/issues/54)) ([3c98342](https://github.com/abinnovision/gh-token-broker/commit/3c983428ff4642fe7f1fb446026c1188e50b4920))
+
+
+### Bug Fixes
+
+* **deps:** bump Go to 1.27.4 ([#52](https://github.com/abinnovision/gh-token-broker/issues/52)) ([fc66ae8](https://github.com/abinnovision/gh-token-broker/commit/fc66ae8f18670f0cb22199d1a99070f3fb5fbdbf))
+* **deps:** upgrade Go modules to latest versions ([#55](https://github.com/abinnovision/gh-token-broker/issues/55)) ([f613d0d](https://github.com/abinnovision/gh-token-broker/commit/f613d0d13878ac24a23898ca47d15745370be751))
+* **githubapp:** revoke the bot lookup installation token after use ([#50](https://github.com/abinnovision/gh-token-broker/issues/50)) ([23f7492](https://github.com/abinnovision/gh-token-broker/commit/23f7492230d376a8e5aee2859841b0061a3fdfca))
+* **server:** audit token requests rejected after authentication ([#51](https://github.com/abinnovision/gh-token-broker/issues/51)) ([896c83b](https://github.com/abinnovision/gh-token-broker/commit/896c83b2d20713652e3d410311a4ffc5bb19858d))
+
 ## [0.8.1](https://github.com/abinnovision/gh-token-broker/compare/v0.8.0...v0.8.1) (2026-09-30)
 
 
