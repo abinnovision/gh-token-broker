@@ -79,6 +79,16 @@ func (i OIDCIssuer) IsPreset() bool {
 	return i.Preset == GitHubPreset
 }
 
+// PinsID reports whether require pins an ID claim of the GitHub preset.
+func (i OIDCIssuer) PinsID() bool {
+	for k := range i.Require {
+		if slices.Contains(GitHubIDClaims(), k) {
+			return true
+		}
+	}
+	return false
+}
+
 const (
 	// GitHubPreset is the preset name for GitHub Actions OIDC tokens.
 	GitHubPreset = "github"
@@ -140,6 +150,18 @@ func GitHubIdentityClaims() []string {
 	var names []string
 	for _, c := range githubClaims {
 		if c.identity {
+			names = append(names, c.name)
+		}
+	}
+	return names
+}
+
+// GitHubIDClaims returns the GitHub preset identity claims that hold
+// immutable IDs. Name claims can be reassigned after a rename or deletion.
+func GitHubIDClaims() []string {
+	var names []string
+	for _, c := range githubClaims {
+		if c.identity && strings.HasSuffix(c.name, "_id") {
 			names = append(names, c.name)
 		}
 	}
@@ -603,9 +625,15 @@ func (c *Config) Lint() []string {
 		}
 		if iss.IsPreset() && len(iss.Require) == 0 {
 			warnings = append(warnings, fmt.Sprintf(
-				"oidc issuer %q uses preset %q without require: tokens from any GitHub Actions workflow are accepted, "+
-					"so every policy must compare an identity claim (%s) with a fixed value or use a caller-anchored resource "+
-					"(consider require: {repository_owner_id: [...]})", iss.Name, GitHubPreset, strings.Join(GitHubIdentityClaims(), ", ")))
+				"oidc issuer %q uses preset %q without require: tokens from any GitHub Actions workflow are accepted; "+
+					"use require: {repository_owner_id: [...]}, or in every policy compare an ID claim (%s) with a fixed value "+
+					"or use a caller-anchored resource. Name claims can be reassigned after a rename or deletion",
+				iss.Name, GitHubPreset, strings.Join(GitHubIDClaims(), ", ")))
+		}
+		if iss.IsPreset() && len(iss.Require) > 0 && !iss.PinsID() {
+			warnings = append(warnings, fmt.Sprintf(
+				"oidc issuer %q has no ID claim in require: names can be reassigned and other claims do not identify the caller; "+
+					"use repository_owner_id, repository_id or enterprise_id", iss.Name))
 		}
 	}
 	return warnings

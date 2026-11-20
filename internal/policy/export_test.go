@@ -6,6 +6,7 @@ import "github.com/abinnovision/gh-token-broker/internal/config"
 const (
 	WarnDeprecatedResources = warnDeprecatedResources
 	WarnResourcesShape      = warnResourcesShape
+	WarnNameIdentity        = warnNameIdentity
 )
 
 // CompileWarnings compiles condition for a policy of iss and returns its

@@ -326,6 +326,11 @@ func TestLint(t *testing.T) {
 			want:  []string{`oidc issuer "github" uses preset "github" without require`},
 		},
 		{
+			name:  "require pins only names",
+			items: githubIssuer + "      require:\n        repository_owner: [\"acme\"]\n",
+			want:  []string{`oidc issuer "github" has no ID claim in require`},
+		},
+		{
 			name:  "unreferenced issuer",
 			items: pinned + gitlabIssuer,
 			want:  []string{`oidc issuer "gitlab" is not referenced by any policy`},

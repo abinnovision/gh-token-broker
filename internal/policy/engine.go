@@ -150,13 +150,23 @@ func compile(env *cel.Env, iss config.OIDCIssuer, policy, expr string, costLimit
 	if err != nil {
 		return nil, nil, fmt.Errorf("policy %q: program condition: %w", policy, err)
 	}
-	return prg, conditionWarnings(ast.NativeRep()), nil
+	warnings := conditionWarnings(ast.NativeRep())
+	if iss.IsPreset() && len(iss.Require) == 0 &&
+		!constrains(celast.NavigateAST(ast.NativeRep()), boundsCaller(config.GitHubIDClaims())) {
+		warnings = append(warnings, warnNameIdentity)
+	}
+	return prg, warnings, nil
 }
 
-// Condition warnings reported by conditionWarnings.
+// Condition warnings reported by compile.
 const (
 	warnDeprecatedResources = "request.resources is deprecated, use request.resource"
 	warnResourcesShape      = "size() or index access on request.resources: the list always has exactly one element"
+	warnNameIdentity        = "condition does not pin the caller by an ID claim (repository_id, repository_owner_id, " +
+		"enterprise_id) or a caller-anchored resource, and the issuer has no require. Name claims (repository, " +
+		"repository_owner, workflow_ref, enterprise) can be reassigned after a rename or deletion. This is a coarse " +
+		"hygiene warning: same-owner pins are not exploitable, but if the pinned owner differs from the resource " +
+		"owner (a cross-owner pin), whoever next holds that name gets this grant"
 )
 
 // conditionWarnings inspects a checked condition for patterns that behave

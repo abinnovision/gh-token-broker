@@ -90,7 +90,11 @@ names one of them in `issuer` and is only evaluated for tokens from that issuer.
 `oidc.clockSkewSeconds` (default `60`) applies to the `exp`, `iat` and `nbf`
 checks of every issuer. The broker runs OIDC discovery for every issuer at
 startup and does not start if one fails. It logs a warning for an issuer that
-no policy references and for a `preset: github` issuer without `require`.
+no policy references, for a `preset: github` issuer without `require`, and
+for one whose `require` pins only name claims. With an owner-ID `require`, a
+name pin is still recyclable inside the organization (a member can recreate a
+deleted repository under the same name), so prefer `repository_id` for
+high-privilege grants.
 
 ### Migration notes
 
@@ -108,8 +112,9 @@ Configurations with `oidc.issuer`, `oidc.audience` or policies without
    `request.resources.all(r, r == "repo:acme/app")`, no longer satisfy this;
    write `request.resource == "repo:acme/app"` instead.
 4. Make every condition constrain `caller` through an identity claim or a
-   caller-anchored resource, unless the issuer has `require`.
-   Pinning the organization with
+   caller-anchored resource, unless the issuer has `require`. Prefer the ID
+   claims (`repository_id`, `repository_owner_id`, `enterprise_id`), since
+   names can be reassigned. Pinning the organization with
    `require: { repository_owner_id: ["<owner id>"] }` on the GitHub entry is
    recommended either way.
 5. Replace `startsWith`, `endsWith`, `contains`, `matches` and ordering
@@ -121,6 +126,7 @@ oidc:
     - name: github
       preset: github
       audience: "gh-token-broker"   # previously oidc.audience
+      require: { repository_owner_id: ["<owner id>"] }
 policies:
   - name: acme-ci
     issuer: github                  # new
@@ -280,10 +286,14 @@ read from the verified token. Values are strings; boolean claims appear as
 | `caller.event_name` | `string` | Event that triggered the run, such as `push`. |
 | `caller.sub` | `string` | Subject, by default `repo:owner/repo:<context>`. Organizations and repositories can customize its template. |
 
-The identity claims `repository`, `repository_id`, `repository_owner`,
-`repository_owner_id`, `workflow_ref`, `enterprise` and `enterprise_id` name
-the repository, owner, workflow file or enterprise of the run, so comparing
-one with a fixed value pins who the caller is. The
+The identity claims name the repository, owner, workflow file or enterprise
+of the run, so comparing one with a fixed value pins who the caller is. The
+ID claims `repository_id`, `repository_owner_id` and `enterprise_id` are
+immutable. The name claims `repository`, `repository_owner`, `workflow_ref`
+and `enterprise` can be reassigned after a rename or deletion. Since GitHub
+resolves names to their current holder, the risk is a pin whose owner
+differs from the resource owner: whoever next holds the pinned name gets the
+grant. The
 other claims only narrow a policy that already pins the caller, either
 through an identity claim or through `require`. Any repository can have a
 `refs/heads/main` branch, and `sub` does not necessarily name a repository
@@ -328,6 +338,10 @@ The broker refuses to start when a condition breaks one of these rules:
   `caller.ref == "refs/heads/main"`, and comparisons between two claims, such
   as `caller.repository == caller.workflow_ref`, do not count. Issuers
   without a preset have no identity claims and always have `require`.
+  A condition that pins the caller only by name claims passes, but logs a
+  `policy condition warning` when the issuer has no `require`. The warning
+  is coarse: it also fires on same-owner pins, which are safe. A `require`
+  that pins only name claims logs a `config lint` warning instead.
 
   A caller-anchored resource is a chain of `+` over string literals and
   caller claims that starts with one of:
