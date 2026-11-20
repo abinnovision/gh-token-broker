@@ -328,7 +328,7 @@ func TestLint(t *testing.T) {
 		{
 			name:  "require pins only names",
 			items: githubIssuer + "      require:\n        repository_owner: [\"acme\"]\n",
-			want:  []string{`oidc issuer "github" pins require only by names`},
+			want:  []string{`oidc issuer "github" has no ID claim in require`},
 		},
 		{
 			name:  "unreferenced issuer",

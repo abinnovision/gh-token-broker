@@ -79,8 +79,7 @@ func (i OIDCIssuer) IsPreset() bool {
 	return i.Preset == GitHubPreset
 }
 
-// PinsID reports whether require pins an ID claim of the GitHub preset. It
-// only applies to the GitHub preset.
+// PinsID reports whether require pins an ID claim of the GitHub preset.
 func (i OIDCIssuer) PinsID() bool {
 	for k := range i.Require {
 		if slices.Contains(GitHubIDClaims(), k) {
@@ -633,7 +632,7 @@ func (c *Config) Lint() []string {
 		}
 		if iss.IsPreset() && len(iss.Require) > 0 && !iss.PinsID() {
 			warnings = append(warnings, fmt.Sprintf(
-				"oidc issuer %q pins require only by names that GitHub can reassign; "+
+				"oidc issuer %q has no ID claim in require: names can be reassigned and other claims do not identify the caller; "+
 					"use repository_owner_id, repository_id or enterprise_id", iss.Name))
 		}
 	}
