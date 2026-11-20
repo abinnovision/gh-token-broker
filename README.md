@@ -426,6 +426,11 @@ policies:
   declared claims are visible to policies. For `preset: github` the events
   also record `run_id`, `run_number`, `run_attempt` and `check_run_id` under
   `audit_claims`. These identify the run and are not visible to policies.
+- **Tokens can be replayed until they expire.** The broker keeps no state, so
+  an OIDC token can be exchanged more than once before its `exp`. Each exchange
+  is audited with the token's `jti` (when present) for correlation. Keep
+  `maxTokenLifetimeSeconds` low to narrow the replay window, and put rate
+  limiting in the ingress or proxy in front of the broker.
 
 The host `token.actions.githubusercontent.com` can only be used through
 `preset: github`.
