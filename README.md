@@ -420,7 +420,9 @@ policies:
 - **Tokens must** carry a non-empty `sub`, `exp` and `iat`, with `exp - iat`
   within `maxTokenLifetimeSeconds`, and exactly one audience equal to
   `audience`. `nbf` is checked when present. Tokens over 16 KiB are rejected.
-- **Audit log.** Every audit event records the issuer name and URL, `sub`,
+- **Audit log.** Every request that passes subject-token verification
+  produces exactly one audit event; verification failures go to the
+  application log. Every audit event records the issuer name and URL, `sub`,
   `jti` (when present), `iat`, `exp` and the declared claims of the token.
   Declare only claims you are willing to store in logs. Of these, only the
   declared claims are visible to policies. For `preset: github` the events

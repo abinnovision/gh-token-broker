@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -522,7 +524,8 @@ func TestTokenExchangeSubjectTokenVerificationFailureIsInvalidGrant(t *testing.T
 		t.Fatalf("policy.New: %v", err)
 	}
 	minter := &fakeMinter{}
-	auditLog := audit.New(slog.New(slog.DiscardHandler))
+	var auditBuf bytes.Buffer
+	auditLog := audit.New(slog.New(slog.NewJSONHandler(&auditBuf, nil)))
 	srv := server.New(fakeAuth{err: context.DeadlineExceeded}, engine, minter,
 		auditLog, slog.New(slog.DiscardHandler), testIssuer, testAppIdentity(), nil)
 
@@ -535,6 +538,9 @@ func TestTokenExchangeSubjectTokenVerificationFailureIsInvalidGrant(t *testing.T
 	}
 	if minter.called {
 		t.Fatal("minter must not be called when subject_token verification fails")
+	}
+	if auditBuf.Len() != 0 {
+		t.Errorf("audit must be empty on verification failure, got %s", auditBuf.String())
 	}
 }
 
@@ -549,6 +555,63 @@ func TestTokenExchangeRejectsMultiOwnerResource(t *testing.T) {
 	if code := oauthError(t, rec); code != "invalid_target" {
 		t.Errorf("error = %s, want invalid_target", code)
 	}
+	assertAuditReason(t, h.audit, "invalid resource: ")
+}
+
+func TestTokenExchangeAuditsInvalidScope(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
+	form := baseTokenForm()
+	form.Set("scope", "contents")
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	assertAuditReason(t, h.audit, "invalid scope")
+}
+
+func TestTokenExchangeAuditsOversizedRequest(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
+	form := baseTokenForm()
+	resources := make([]string, 257)
+	for i := range resources {
+		resources[i] = fmt.Sprintf("repo:acme/r%d", i)
+	}
+	form["resource"] = resources
+	rec := doToken(h.server.Handler(), form)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	assertAuditReason(t, h.audit, "invalid request: ")
+}
+
+func TestTokenExchangeAuditsUpstreamError(t *testing.T) {
+	h := newHarness(t, []config.Policy{allowTokenPolicy()})
+	h.minter.err = errors.New("boom")
+	rec := doToken(h.server.Handler(), baseTokenForm())
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	record := assertAuditReason(t, h.audit, "upstream error")
+	if matched, _ := record["matched_policies"].([]any); len(matched) == 0 {
+		t.Errorf("matched_policies = %v, want non-empty", record["matched_policies"])
+	}
+}
+
+// assertAuditReason checks that exactly one deny audit record was written and
+// that its reason starts with prefix.
+func assertAuditReason(t *testing.T, buf *bytes.Buffer, prefix string) map[string]any {
+	t.Helper()
+	var record map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &record); err != nil {
+		t.Fatal(err)
+	}
+	if record["decision"] != "deny" || record["token_issued"] != false {
+		t.Errorf("decision = %v, token_issued = %v, want deny/false", record["decision"], record["token_issued"])
+	}
+	if reason, _ := record["reason"].(string); !strings.HasPrefix(reason, prefix) {
+		t.Errorf("reason = %q, want prefix %q", reason, prefix)
+	}
+	return record
 }
 
 func TestTokenExchangeIgnoresMismatchedAudience(t *testing.T) {

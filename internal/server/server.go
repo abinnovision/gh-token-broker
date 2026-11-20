@@ -224,8 +224,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceIP := clientIP(r, s.proxy)
 	resources, err := resource.ParseAll(form["resource"])
 	if err != nil {
+		s.auditDeny("token", id, sourceIP, nil, nil, policy.Decision{},
+			"invalid resource: "+fmt.Sprintf("%.*s", maxLoggedErrorRunes, err.Error()))
 		writeOAuthError(w, http.StatusBadRequest, errInvalidTarget, err.Error())
 		return
 	}
@@ -238,11 +241,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	perms, ok := decodeScope(form.Get("scope"))
 	if !ok {
+		s.auditDeny("token", id, sourceIP, resources, nil, policy.Decision{}, "invalid scope")
 		writeOAuthError(w, http.StatusBadRequest, errInvalidScope, "scope must be a space-delimited list of permission:level tokens")
 		return
 	}
 
-	sourceIP := clientIP(r, s.proxy)
 	decision, err := s.engine.Evaluate(policy.Input{
 		Issuer:   id.Issuer,
 		Caller:   id.Claims,
@@ -251,6 +254,8 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}, policy.Scope{Permissions: perms})
 	if err != nil {
 		// Oversized request.repositories is rejected, not truncated.
+		s.auditDeny("token", id, sourceIP, resources, perms, policy.Decision{},
+			"invalid request: "+fmt.Sprintf("%.*s", maxLoggedErrorRunes, err.Error()))
 		writeOAuthError(w, http.StatusBadRequest, errInvalidRequest, err.Error())
 		return
 	}
@@ -273,6 +278,7 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.logger.Error("mint token", "error", err.Error())
+		s.auditDeny("token", id, sourceIP, resources, perms, decision, "upstream error")
 		writeOAuthError(w, http.StatusBadGateway, errServerError, "upstream error")
 		return
 	}
