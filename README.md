@@ -54,7 +54,9 @@ oidc:
   issuers:
     - name: github
       preset: github
-      audience: "gh-token-broker"
+      # Unique per deployment; exchange-github-token sends `broker-url` as the
+      # audience by default, so match it exactly or pass `audience:` to the action.
+      audience: "https://gh-token-broker.example.com"
       require:
         repository_owner_id: ["123456789"]
 
@@ -125,7 +127,7 @@ oidc:
   issuers:
     - name: github
       preset: github
-      audience: "gh-token-broker"   # previously oidc.audience
+      audience: "<your audience>"   # previously oidc.audience
       require: { repository_owner_id: ["<owner id>"] }
 policies:
   - name: acme-ci
@@ -405,7 +407,7 @@ oidc:
   issuers:
     - name: gitlab
       issuer: "https://gitlab.example.com"
-      audience: "gh-token-broker"
+      audience: "https://gh-token-broker.example.com"
       claims: [sub, project_path]
       require:
         namespace_id: ["4711"]
@@ -426,7 +428,8 @@ policies:
 - **The audience is not an authorization check.** It prevents tokens meant for
   other services from being replayed to the broker. On many issuers any caller
   can request a token for any audience, so it says nothing about who the
-  caller is.
+  caller is. Sharing an audience across deployments lets a token sent to one be
+  replayed to the other.
 - **Prefer `sub` and numeric or immutable IDs** over names and email
   addresses, which can be renamed, reused or reassigned.
 - **Only string and boolean claims are usable.** A declared or required claim
@@ -464,8 +467,9 @@ go test ./...
 
 ## GitHub Actions usage
 
-Each job needs `permissions: { id-token: write }`. The `audience` value must
-match the `audience` of the `preset: github` entry in `oidc.issuers`.
+Each job needs `permissions: { id-token: write }`. The action sends `broker-url`
+as the audience unless `audience:` is set; it must equal the configured
+`audience` of the `preset: github` entry in `oidc.issuers`.
 
 ### Request a scoped token
 
@@ -485,7 +489,7 @@ jobs:
         id: token
         uses: abinnovision/actions@exchange-github-token-v1
         with:
-          broker-url: https://<broker-host>/
+          broker-url: https://<broker-host>
           scope: "contents:read"
           resources: repo:acme/app # optional; defaults to the current repo
       - name: Use the token
