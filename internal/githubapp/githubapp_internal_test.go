@@ -1,6 +1,7 @@
 package githubapp
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
@@ -298,52 +299,90 @@ func TestValidateAppPermissionsAPIError(t *testing.T) {
 }
 
 func TestFetchAppIdentity(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/app":
-			_, _ = w.Write([]byte(`{"slug": "test-app", "permissions": {}}`))
-		case "/app/installations":
-			_, _ = w.Write([]byte(`[{"id": 99}]`))
-		case "/app/installations/99/access_tokens":
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"token": "ghs_identitytoken", "expires_at": "2099-01-01T00:00:00Z"}`))
-		case "/users/test-app[bot]":
-			// The bot-user lookup must carry the minted installation token, not
-			// the App JWT (which /users rejects with 401 Bad credentials). If it
-			// regressed to the JWT client, AppsTransport would overwrite this
-			// header with the JWT and the assertion below would fail.
-			if got := r.Header.Get("Authorization"); got != "Bearer ghs_identitytoken" {
-				t.Errorf("bot user request Authorization = %q, want %q", got, "Bearer ghs_identitytoken")
+	for _, tc := range []struct {
+		name         string
+		revokeStatus int
+	}{
+		{"revoke ok", http.StatusNoContent},
+		{"revoke fails", http.StatusInternalServerError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var revoked bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/app":
+					_, _ = w.Write([]byte(`{"slug": "test-app", "permissions": {}}`))
+				case "/app/installations":
+					_, _ = w.Write([]byte(`[{"id": 99}]`))
+				case "/app/installations/99/access_tokens":
+					w.WriteHeader(http.StatusCreated)
+					_, _ = w.Write([]byte(`{"token": "ghs_identitytoken", "expires_at": "2099-01-01T00:00:00Z"}`))
+				case "/installation/token":
+					if r.Method != http.MethodDelete {
+						t.Errorf("revoke method = %s, want DELETE", r.Method)
+					}
+					if got := r.Header.Get("Authorization"); got != "Bearer ghs_identitytoken" {
+						t.Errorf("revoke Authorization = %q, want %q", got, "Bearer ghs_identitytoken")
+					}
+					revoked = true
+					w.WriteHeader(tc.revokeStatus)
+				case "/users/test-app[bot]":
+					// The bot-user lookup must carry the minted installation token, not
+					// the App JWT (which /users rejects with 401 Bad credentials). If it
+					// regressed to the JWT client, AppsTransport would overwrite this
+					// header with the JWT and the assertion below would fail.
+					if got := r.Header.Get("Authorization"); got != "Bearer ghs_identitytoken" {
+						t.Errorf("bot user request Authorization = %q, want %q", got, "Bearer ghs_identitytoken")
+					}
+					if revoked {
+						t.Error("token revoked before the bot user lookup")
+					}
+					_, _ = w.Write([]byte(`{"id": 12345}`))
+				default:
+					t.Errorf("unexpected path %s", r.URL.Path)
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			// httpClient injects an App-JWT-style Authorization header (like the real
+			// AppsTransport); publicClient carries no such transport. This proves the
+			// bot-user lookup goes through publicClient with the installation token: if
+			// it regressed to httpClient, the JWT would overwrite the header and the
+			// /users handler above would fail the test.
+			c := testClientWithApps(srv.URL, &http.Client{Transport: authInjector{srv.Client().Transport}})
+			c.publicClient = srv.Client()
+			var buf bytes.Buffer
+			c.logger = slog.New(slog.NewTextHandler(&buf, nil))
+
+			identity, err := c.FetchAppIdentity(context.Background())
+			if err != nil {
+				t.Fatalf("FetchAppIdentity: %v", err)
 			}
-			_, _ = w.Write([]byte(`{"id": 12345}`))
-		default:
-			t.Errorf("unexpected path %s", r.URL.Path)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	}))
-	defer srv.Close()
-
-	// httpClient injects an App-JWT-style Authorization header (like the real
-	// AppsTransport); publicClient carries no such transport. This proves the
-	// bot-user lookup goes through publicClient with the installation token: if
-	// it regressed to httpClient, the JWT would overwrite the header and the
-	// /users handler above would fail the test.
-	c := testClientWithApps(srv.URL, &http.Client{Transport: authInjector{srv.Client().Transport}})
-	c.publicClient = srv.Client()
-
-	identity, err := c.FetchAppIdentity(context.Background())
-	if err != nil {
-		t.Fatalf("FetchAppIdentity: %v", err)
-	}
-	if identity.Name != "test-app[bot]" {
-		t.Errorf("Name = %q, want %q", identity.Name, "test-app[bot]")
-	}
-	if identity.Email != "12345+test-app[bot]@users.noreply.github.com" {
-		t.Errorf("Email = %q, want %q", identity.Email, "12345+test-app[bot]@users.noreply.github.com")
-	}
-	if c.AppIdentity() != identity {
-		t.Errorf("AppIdentity() = %v, want %v", c.AppIdentity(), identity)
+			if identity.Name != "test-app[bot]" {
+				t.Errorf("Name = %q, want %q", identity.Name, "test-app[bot]")
+			}
+			if identity.Email != "12345+test-app[bot]@users.noreply.github.com" {
+				t.Errorf("Email = %q, want %q", identity.Email, "12345+test-app[bot]@users.noreply.github.com")
+			}
+			if c.AppIdentity() != identity {
+				t.Errorf("AppIdentity() = %v, want %v", c.AppIdentity(), identity)
+			}
+			if !revoked {
+				t.Error("identity token was not revoked")
+			}
+			warned := strings.Contains(buf.String(), "revoke identity token")
+			if tc.revokeStatus != http.StatusNoContent && !warned {
+				t.Errorf("log missing revoke warning: %q", buf.String())
+			}
+			if tc.revokeStatus == http.StatusNoContent && warned {
+				t.Errorf("unexpected revoke warning on success: %q", buf.String())
+			}
+			if strings.Contains(buf.String(), "ghs_identitytoken") {
+				t.Errorf("log leaks token: %q", buf.String())
+			}
+		})
 	}
 }
 
