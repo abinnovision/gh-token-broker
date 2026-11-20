@@ -224,8 +224,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	sourceIP := clientIP(r, s.proxy)
 	resources, err := resource.ParseAll(form["resource"])
 	if err != nil {
+		s.auditDeny(id, sourceIP, nil, nil, policy.Decision{},
+			"invalid resource: "+fmt.Sprintf("%.*s", maxLoggedErrorRunes, err.Error()))
 		writeOAuthError(w, http.StatusBadRequest, errInvalidTarget, err.Error())
 		return
 	}
@@ -238,11 +241,11 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	perms, ok := decodeScope(form.Get("scope"))
 	if !ok {
+		s.auditDeny(id, sourceIP, resources, nil, policy.Decision{}, "invalid scope")
 		writeOAuthError(w, http.StatusBadRequest, errInvalidScope, "scope must be a space-delimited list of permission:level tokens")
 		return
 	}
 
-	sourceIP := clientIP(r, s.proxy)
 	decision, err := s.engine.Evaluate(policy.Input{
 		Issuer:   id.Issuer,
 		Caller:   id.Claims,
@@ -251,11 +254,13 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	}, policy.Scope{Permissions: perms})
 	if err != nil {
 		// Oversized request.repositories is rejected, not truncated.
+		s.auditDeny(id, sourceIP, resources, perms, policy.Decision{},
+			"invalid request: "+fmt.Sprintf("%.*s", maxLoggedErrorRunes, err.Error()))
 		writeOAuthError(w, http.StatusBadRequest, errInvalidRequest, err.Error())
 		return
 	}
 	if !decision.Allowed {
-		s.auditDeny("token", id, sourceIP, resources, perms, decision, denyReason(decision))
+		s.auditDeny(id, sourceIP, resources, perms, decision, denyReason(decision))
 		writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "forbidden by policy")
 		return
 	}
@@ -263,16 +268,17 @@ func (s *Server) handleToken(w http.ResponseWriter, r *http.Request) {
 	token, err := s.minter.Mint(r.Context(), owner, resources, perms)
 	if err != nil {
 		if errors.Is(err, githubapp.ErrEmptyScope) {
-			s.auditDeny("token", id, sourceIP, resources, perms, decision, "empty computed scope")
+			s.auditDeny(id, sourceIP, resources, perms, decision, "empty computed scope")
 			writeOAuthError(w, http.StatusBadRequest, errInvalidGrant, "forbidden by policy")
 			return
 		}
 		if errors.Is(err, githubapp.ErrInsufficientScope) {
-			s.auditDeny("token", id, sourceIP, resources, perms, decision, "installation permissions insufficient")
+			s.auditDeny(id, sourceIP, resources, perms, decision, "installation permissions insufficient")
 			writeOAuthError(w, http.StatusBadRequest, errInvalidScope, "requested scope exceeds installation permissions")
 			return
 		}
 		s.logger.Error("mint token", "error", err.Error())
+		s.auditDeny(id, sourceIP, resources, perms, decision, "upstream error")
 		writeOAuthError(w, http.StatusBadGateway, errServerError, "upstream error")
 		return
 	}
@@ -364,10 +370,10 @@ func scopeEqual(a, b map[string]string) bool {
 
 // --- helpers -----------------------------------------------------------------
 
-func (s *Server) auditDeny(op string, id *auth.Identity, sourceIP netip.Addr, resources []resource.Resource, perms map[string]string,
+func (s *Server) auditDeny(id *auth.Identity, sourceIP netip.Addr, resources []resource.Resource, perms map[string]string,
 	decision policy.Decision, reason string) {
 	s.audit.Log(audit.Event{
-		Operation:       op,
+		Operation:       "token",
 		Decision:        audit.DecisionDeny,
 		Issuer:          id.Issuer,
 		IssuerURL:       id.IssuerURL,
