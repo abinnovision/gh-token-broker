@@ -24,12 +24,12 @@ func write(t *testing.T, body string) string {
 
 const githubIssuer = `    - name: github
       preset: github
-      audience: gh-token-broker
+      audience: https://audience.example.com
 `
 
 const gitlabIssuer = `    - name: gitlab
       issuer: https://gitlab.example.com
-      audience: gh-token-broker
+      audience: https://audience.example.com
       claims: [sub, project_path]
       require:
         namespace_id: ["4711"]
@@ -200,7 +200,7 @@ func TestRejectInvalidIssuers(t *testing.T) {
 		{name: "invalid name", items: gitlabWith("name: gitlab", "name: GitLab"), wantErr: "/oidc/issuers/1/name"},
 		{name: "duplicate name", items: gitlabWith("name: gitlab", "name: github"), wantErr: `duplicate oidc issuer name "github"`},
 		{name: "duplicate URL", items: githubIssuer + strings.Replace(githubIssuer, "name: github", "name: github2", 1), wantErr: "duplicate oidc issuer URL"},
-		{name: "missing audience", items: strings.Replace(githubIssuer, "      audience: gh-token-broker\n", "", 1), wantErr: "audience"},
+		{name: "missing audience", items: strings.Replace(githubIssuer, "      audience: https://audience.example.com\n", "", 1), wantErr: "audience"},
 		{name: "http URL", items: gitlabURL("http://gitlab.example.com"), wantErr: "canonical https://"},
 		{name: "trailing slash", items: gitlabURL("https://gitlab.example.com/"), wantErr: "canonical https://"},
 		{name: "uppercase host", items: gitlabURL("https://GitLab.example.com"), wantErr: "canonical https://"},
@@ -283,13 +283,13 @@ func TestRejectSingleIssuerShape(t *testing.T) {
 	}{
 		{
 			name:    "oidc.audience",
-			body:    strings.Replace(validConfig, "  issuers:\n", "  audience: gh-token-broker\n  issuers:\n", 1),
+			body:    strings.Replace(validConfig, "  issuers:\n", "  audience: https://audience.example.com\n  issuers:\n", 1),
 			wantErr: "move them into an oidc.issuers entry",
 		},
 		{
 			name: "oidc.issuer and oidc.audience",
 			body: strings.Replace(
-				strings.Replace(validConfig, "  issuers:\n"+githubIssuer, "  issuer: https://token.actions.githubusercontent.com\n  audience: gh-token-broker\n", 1),
+				strings.Replace(validConfig, "  issuers:\n"+githubIssuer, "  issuer: https://token.actions.githubusercontent.com\n  audience: https://audience.example.com\n", 1),
 				"    issuer: github\n", "", 1),
 			wantErr: "preset: github",
 		},
@@ -314,6 +314,7 @@ func TestRejectSingleIssuerShape(t *testing.T) {
 
 func TestLint(t *testing.T) {
 	pinned := githubIssuer + "      require:\n        repository_owner_id: [\"123\"]\n"
+	sharedAudience := strings.Replace(pinned, "https://audience.example.com", "gh-token-broker", 1)
 	tests := []struct {
 		name  string
 		items string
@@ -329,6 +330,11 @@ func TestLint(t *testing.T) {
 			name:  "require pins only names",
 			items: githubIssuer + "      require:\n        repository_owner: [\"acme\"]\n",
 			want:  []string{`oidc issuer "github" has no ID claim in require`},
+		},
+		{
+			name:  "shared example audience",
+			items: sharedAudience,
+			want:  []string{`oidc issuer "github" uses the shared example audience "gh-token-broker"`},
 		},
 		{
 			name:  "unreferenced issuer",
@@ -407,13 +413,13 @@ func TestLoadFromBytesParsesValidConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.OIDC.Issuers) != 1 || cfg.OIDC.Issuers[0].Audience != "gh-token-broker" {
+	if len(cfg.OIDC.Issuers) != 1 || cfg.OIDC.Issuers[0].Audience != "https://audience.example.com" {
 		t.Errorf("issuers = %+v", cfg.OIDC.Issuers)
 	}
 }
 
 func TestLoadFromBytesRejectsInvalid(t *testing.T) {
-	body := strings.Replace(validConfig, "      audience: gh-token-broker\n", "", 1)
+	body := strings.Replace(validConfig, "      audience: https://audience.example.com\n", "", 1)
 	if _, err := config.LoadFromBytes([]byte(body)); err == nil {
 		t.Fatal("missing audience must be rejected")
 	}

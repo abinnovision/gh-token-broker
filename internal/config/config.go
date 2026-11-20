@@ -607,6 +607,9 @@ func (c *Config) AggregateGrantPermissions() map[string]string {
 	return agg
 }
 
+// sharedExampleAudience is the audience used by earlier example configs.
+const sharedExampleAudience = "gh-token-broker"
+
 // Lint returns non-fatal configuration warnings.
 func (c *Config) Lint() []string {
 	var warnings []string
@@ -622,6 +625,11 @@ func (c *Config) Lint() []string {
 		if !referenced[iss.Name] {
 			warnings = append(warnings, fmt.Sprintf(
 				"oidc issuer %q is not referenced by any policy: its tokens are always denied", iss.Name))
+		}
+		if iss.Audience == sharedExampleAudience {
+			warnings = append(warnings, fmt.Sprintf(
+				"oidc issuer %q uses the shared example audience %q: any broker with the same audience accepts the same tokens, "+
+					"use a value unique to this deployment, such as its public URL", iss.Name, sharedExampleAudience))
 		}
 		if iss.IsPreset() && len(iss.Require) == 0 {
 			warnings = append(warnings, fmt.Sprintf(

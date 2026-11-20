@@ -37,7 +37,10 @@ oidc:
       # REQUIRED: a broker-specific audience. GitHub's default audience is
       # claimable by any workflow in the org, so this MUST be a value you set
       # explicitly on the caller side (id-token: request with `aud: <this value>`).
-      audience: "gh-token-broker"
+      # Keep it unique per deployment. exchange-github-token sends `broker-url`
+      # as the audience by default, so match it exactly or pass `audience:` to
+      # the action.
+      audience: "https://gh-token-broker.example.com"
       # Recommended: pin the organization by its immutable ID. Tokens that do
       # not match are rejected before any policy runs.
       require:
@@ -48,7 +51,7 @@ oidc:
     # immutable IDs over names.
     # - name: gitlab
     #   issuer: "https://gitlab.example.com"
-    #   audience: "gh-token-broker"
+    #   audience: "https://gh-token-broker.example.com"
     #   algorithms: [RS256]            # default [RS256]
     #   maxTokenLifetimeSeconds: 3600  # default 3600
     #   claims: [sub, project_path]
