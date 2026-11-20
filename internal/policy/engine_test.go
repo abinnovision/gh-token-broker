@@ -495,6 +495,44 @@ func TestCompileWarnings(t *testing.T) {
 	}
 }
 
+func TestNameIdentityWarning(t *testing.T) {
+	nameRequired := config.OIDCIssuer{
+		Name: "github", Preset: config.GitHubPreset, Claims: config.GitHubClaims(),
+		Require: map[string][]string{"repository_owner": {"acme"}},
+	}
+	warn := []string{policy.WarnNameIdentity}
+	tests := []struct {
+		iss       config.OIDCIssuer
+		condition string
+		want      []string
+	}{
+		// Same-owner pin: not exploitable, but the warning is coarse.
+		{openGitHub, `caller.repository == "acme/app" && request.resource == "repo:acme/app"`, warn},
+		// Cross-owner pin: the exploitable case.
+		{openGitHub, `caller.repository == "partner/ci" && request.resource == "repo:acme/deploy"`, warn},
+		{openGitHub, `caller.workflow_ref == "acme/app/.github/workflows/ci.yml@refs/heads/main" && request.resource == "repo:acme/app"`, warn},
+		{openGitHub, `caller.repository_owner == "acme" && request.resource == "repo:acme/app"`, warn},
+		{openGitHub, `caller.enterprise == "acme" && request.resource == "repo:acme/app"`, warn},
+		{openGitHub, `caller.repository_id == "1" && request.resource == "repo:acme/app"`, nil},
+		{openGitHub, `request.resource == "repo:" + caller.repository`, nil},
+		{openGitHub, `request.resource == "org:" + caller.repository_owner`, nil},
+		{openGitHub, `(caller.repository_id == "1" && request.resource == "repo:a/b") || ` +
+			`(caller.repository == "a/c" && request.resource == "repo:a/c")`, warn},
+		// Reported by the issuer-level Lint warning instead.
+		{nameRequired, `caller.repository == "acme/app" && request.resource == "repo:acme/app"`, nil},
+		{pinnedGitHub, `caller.repository == "acme/app" && request.resource == "repo:acme/app"`, nil},
+	}
+	for _, tt := range tests {
+		got, err := policy.CompileWarnings(tt.iss, tt.condition)
+		if err != nil {
+			t.Fatalf("%s: %v", tt.condition, err)
+		}
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("%s: warnings = %q, want %q", tt.condition, got, tt.want)
+		}
+	}
+}
+
 func TestProductionStyleConfig(t *testing.T) {
 	e := mustEngine(t, &config.Config{Policies: productionPolicies()})
 	resources := []string{"repo:acme/app", "repo:acme/app-gitops"}

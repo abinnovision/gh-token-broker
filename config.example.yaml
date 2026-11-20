@@ -76,8 +76,9 @@ policy:
 # resource receives the combined grant of the policies matching it, and every
 # requested resource must be covered for the full requested scope.
 policies:
-  # ANCHORED matching only: use == or `in [...]` against id-anchored caller
-  # claims. Substring and prefix matching (startsWith, endsWith, contains,
+  # ANCHORED matching only: use == or `in [...]` against caller claims; prefer
+  # ID claims (repository_id, repository_owner_id) because names can be
+  # reassigned. Substring and prefix matching (startsWith, endsWith, contains,
   # matches) is rejected at startup.
   - name: acme-ci
     issuer: github
@@ -94,7 +95,7 @@ policies:
       permissions:
         contents: read
   # Claims such as ref only narrow a policy that pins the caller with an
-  # identity claim such as repository or workflow_ref: this grants write
+  # identity claim such as repository_id or workflow_ref: this grants write
   # access from main only.
   - name: gitops-deploy
     issuer: github
