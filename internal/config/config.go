@@ -607,7 +607,7 @@ func (c *Config) AggregateGrantPermissions() map[string]string {
 	return agg
 }
 
-// sharedExampleAudience is the audience used by earlier example configs.
+// sharedExampleAudience is a widely copied audience that Lint flags.
 const sharedExampleAudience = "gh-token-broker"
 
 // Lint returns non-fatal configuration warnings.
