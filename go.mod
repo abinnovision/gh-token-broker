@@ -1,6 +1,6 @@
 module github.com/abinnovision/gh-token-broker
 
-go 1.27.1
+go 1.27.4
 
 require (
 	cel.dev/cel-go v0.32.0
