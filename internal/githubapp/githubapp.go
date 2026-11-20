@@ -360,6 +360,7 @@ func (c *Client) FetchAppIdentity(ctx context.Context) (AppIdentity, error) {
 	if err != nil {
 		return AppIdentity{}, err
 	}
+	defer c.revokeToken(ctx, token)
 
 	url := c.baseURL + "/users/" + slug + "%5Bbot%5D"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -403,7 +404,7 @@ func (c *Client) FetchAppIdentity(ctx context.Context) (AppIdentity, error) {
 // benefits from the authenticated rate limit instead of the low per-IP
 // unauthenticated one. It uses the App's first installation; metadata:read is
 // granted to every installation, so minting never fails on the permission
-// ceiling.
+// ceiling. FetchAppIdentity revokes the token after the lookup.
 func (c *Client) identityToken(ctx context.Context) (string, error) {
 	insts, _, err := c.apps.Apps.ListInstallations(ctx, &github.ListOptions{PerPage: 1})
 	if err != nil {
@@ -417,6 +418,27 @@ func (c *Client) identityToken(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("githubapp: mint identity token: %w", err)
 	}
 	return token.Token, nil
+}
+
+// revokeToken revokes an installation token (DELETE /installation/token) on a
+// best-effort basis. Failures are logged without the token.
+func (c *Client) revokeToken(ctx context.Context, token string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.baseURL+"/installation/token", nil)
+	if err != nil {
+		c.logger.Warn("revoke identity token", "error", err)
+		return
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := c.publicClient.Do(req)
+	if err != nil {
+		c.logger.Warn("revoke identity token", "error", err)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusNoContent {
+		c.logger.Warn("revoke identity token", "status", resp.StatusCode)
+	}
 }
 
 // AppIdentity returns the App's bot identity, as fetched by FetchAppIdentity.
